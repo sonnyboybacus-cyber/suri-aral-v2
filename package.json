@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.2.0",
   "type": "module",
+  "homepage": "https://sonny-delarosa.github.io/suri-aral-automated-item-analysis-with-ai/",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
