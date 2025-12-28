@@ -1,0 +1,8 @@
+{
+  "name": "suri-aral-v2",
+  "description": "An application for teachers to automate item analysis, calculate mastery levels, and generate reports. Includes AI-powered features for deeper insights and chat assistance.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

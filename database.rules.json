@@ -1,0 +1,149 @@
+{
+  "rules": {
+    "system_settings": {
+      "academic_config": {
+        ".read": "auth != null",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin'"
+      }
+    },
+    "users": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin'",
+      "$uid": {
+        ".read": "auth.uid === $uid || root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin'",
+        ".write": "auth.uid === $uid || root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin'",
+        "settings": {
+          ".validate": "newData.hasChildren(['theme'])"
+        },
+        "profile": {
+          "role": {
+            ".validate": "newData.val() === 'teacher' || newData.val() === 'student' || newData.val() === 'admin' || newData.val() === 'principal' || newData.val() === 'ict_coordinator'"
+          }
+        }
+      }
+    },
+    "access_codes": {
+      ".read": true,
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')",
+      ".indexOn": [
+        "code"
+      ]
+    },
+    "students_sf1": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'principal')",
+      ".indexOn": [
+        "linkedAccountId"
+      ],
+      "$studentId": {
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || newData.child('linkedAccountId').val() === auth.uid || data.child('linkedAccountId').val() === auth.uid)",
+        ".validate": "newData.hasChildren(['lastName', 'firstName'])"
+      }
+    },
+    "teachers": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'principal')",
+      ".indexOn": [
+        "linkedAccountId",
+        "email"
+      ],
+      "$teacherId": {
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || newData.child('linkedAccountId').val() === auth.uid || data.child('linkedAccountId').val() === auth.uid)",
+        ".validate": "newData.hasChildren(['lastName', 'firstName'])"
+      }
+    },
+    "classes": {
+      ".read": "auth != null",
+      ".indexOn": [
+        "joinCode"
+      ],
+      "$classId": {
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher')",
+        ".validate": "newData.hasChildren(['gradeLevel', 'section'])",
+        "studentIds": {
+          ".write": "auth != null"
+        }
+      }
+    },
+    "schools": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')",
+      "$schoolId": {
+        "assignedTeacherIds": {
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren()"
+        }
+      }
+    },
+    "subjects": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher')"
+    },
+    "student_progress": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher' || auth.uid === $uid)"
+      }
+    },
+    "announcements": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'principal')",
+      "$announcementId": {
+        ".validate": "newData.hasChildren(['title', 'content'])"
+      }
+    },
+    "activity_logs": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')",
+      ".write": "auth != null",
+      "$logId": {
+        ".validate": "newData.hasChild('userId') && newData.child('userId').val() === auth.uid"
+      }
+    },
+    "learning_journeys": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": [
+        "userId"
+      ]
+    },
+    "managed_resources": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')"
+    },
+    "calendar_events": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'principal' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')",
+      "$eventId": {
+        ".validate": "newData.hasChildren(['title', 'startDate'])"
+      }
+    },
+    "question_banks": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'principal' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')",
+      ".indexOn": [
+        "createdBy",
+        "isShared"
+      ]
+    },
+    "questions": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'principal' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')"
+    },
+    "tos_templates": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'principal' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator')",
+      ".indexOn": [
+        "createdBy",
+        "isShared"
+      ]
+    },
+    "deped_competencies": {
+      ".read": "auth != null",
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('profile').child('role').val() === 'admin' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'ict_coordinator' || root.child('users').child(auth.uid).child('profile').child('role').val() === 'teacher')",
+      ".indexOn": [
+        "subject",
+        "gradeLevel",
+        "quarter"
+      ]
+    }
+  }
+}

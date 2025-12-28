@@ -1,0 +1,13 @@
+{
+  "appId": "com.suriaral.app",
+  "appName": "Suri Aral",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0
+    }
+  }
+}

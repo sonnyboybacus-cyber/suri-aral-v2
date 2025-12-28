@@ -1,0 +1,47 @@
+{
+  "name": "suri-aral-v2",
+  "private": true,
+  "version": "1.2.3",
+  "type": "module",
+  "scripts": {
+    "dev": "npx vite",
+    "build": "npx vite build",
+    "preview": "npx vite preview",
+    "deploy": "npm run build && firebase deploy"
+  },
+  "dependencies": {
+    "@capacitor/android": "^5.7.0",
+    "@capacitor/core": "^5.7.0",
+    "@google/genai": "latest",
+    "@types/react-window": "^1.8.8",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.17",
+    "firebase": "^10.8.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^2.5.1",
+    "jspdf-autotable": "^3.8.2",
+    "katex": "^0.16.9",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^0.344.0",
+    "mammoth": "^1.11.0",
+    "pdfjs-dist": "^5.4.449",
+    "postcss": "^8.4.35",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-katex": "^3.0.1",
+    "react-leaflet": "^4.2.1",
+    "react-window": "^2.2.3",
+    "recharts": "^2.12.0",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.0",
+    "vite-plugin-pwa": "^0.19.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^5.7.0",
+    "@types/leaflet": "^1.9.8",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19"
+  }
+}
