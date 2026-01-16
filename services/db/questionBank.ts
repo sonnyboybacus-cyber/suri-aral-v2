@@ -123,8 +123,8 @@ export const loadQuestionsByFilters = async (
         const search = filters.searchText.toLowerCase();
         questions = questions.filter(q =>
             q.questionText.toLowerCase().includes(search) ||
-            q.learningCompetency.toLowerCase().includes(search) ||
-            q.competencyCode.toLowerCase().includes(search)
+            (q.learningCompetency || '').toLowerCase().includes(search) ||
+            (q.competencyCode || '').toLowerCase().includes(search)
         );
     }
 

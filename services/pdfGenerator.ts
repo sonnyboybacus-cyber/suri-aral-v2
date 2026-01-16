@@ -268,7 +268,7 @@ export const generateDLLPDF = (plan: LessonPlan) => {
 
     const addText = (text: string, x: number, yPos: number, size: number, weight: 'normal' | 'bold' = 'normal') => {
         doc.setFontSize(size);
-        doc.setFont('helvetica', weight);
+        doc.setFont('helvetica', 'normal');
         doc.text(text, x, yPos);
     };
 
@@ -386,11 +386,7 @@ export const generateItemAnalysisReport = (
     // AI Insights Section
     if (aiAnalysisReport) {
         let finalY = (doc as any).lastAutoTable.finalY + 15;
-
-        if (finalY > 250) {
-            doc.addPage();
-            finalY = 20;
-        }
+        if (finalY > 230) { doc.addPage(); finalY = 20; }
 
         doc.setFontSize(12);
         doc.setFont('helvetica', 'bold');
@@ -402,11 +398,9 @@ export const generateItemAnalysisReport = (
         doc.setTextColor(0, 0, 0);
         doc.setFont('helvetica', 'normal');
 
-        // Clean text for PDF
         const cleanReport = aiAnalysisReport.replace(/\*\*/g, '').replace(/###/g, '').replace(/##/g, '');
         const splitText = doc.splitTextToSize(cleanReport, pageWidth - 28);
 
-        // Handle pagination for long text
         if (finalY + (splitText.length * 5) > 280) {
             const linesPerPage = Math.floor((280 - finalY) / 5);
             const firstBlock = splitText.slice(0, linesPerPage);
@@ -429,23 +423,48 @@ export const generateAnswerSheet = (metadata: any) => {
     const pageHeight = doc.internal.pageSize.height;
     const totalItems = metadata.totalItems || 50; // Default to 50 if 0
 
-    // --- 1. Header with Markers (V2 - HIGH ACCURACY) ---
-    // Drawing Scanning Anchors (Fiducials) for 100% detection accuracy
-    // V2: Increased size to 10mm for robust detection even in low light/blur
+    // --- 1. Header with Markers (V2.1 - CONCENTRIC FIDUCIALS) ---
+    // Detects Concentric Squares (Black-White-Black) for topological certainty
+    // Outer: 10mm, Middle: 6mm, Inner: 3mm
     const anchorSize = 10;
-    const anchorMargin = 10; // Increased margin to avoid printer clipping
+    const anchorMargin = 10;
+
+    const drawFiducial = (x: number, y: number) => {
+        // Outer Black
+        doc.setFillColor(0, 0, 0);
+        doc.rect(x, y, anchorSize, anchorSize, 'F');
+        // Middle White
+        doc.setFillColor(255, 255, 255);
+        const midSize = 6;
+        const midOffset = (anchorSize - midSize) / 2;
+        doc.rect(x + midOffset, y + midOffset, midSize, midSize, 'F');
+        // Inner Black
+        doc.setFillColor(0, 0, 0);
+        const innerSize = 2.5;
+        const innerOffset = (anchorSize - innerSize) / 2;
+        doc.rect(x + innerOffset, y + innerOffset, innerSize, innerSize, 'F');
+    };
+
+    // --- NEW LAYOUT: Markers at 4 Corners (Y=10 to Y=277) ---
+    // Top Markers: Y=10 (Top Margin = 10)
+    // Bottom Markers: Y=277 (Bottom Margin = 10, Size=10 -> Ends at 287)
+    // Grid Starts: Y=80
+    const topMarkerY = 10;
 
     // Top Left
-    doc.setFillColor(0, 0, 0);
-    doc.rect(anchorMargin, anchorMargin, anchorSize, anchorSize, 'F');
+    drawFiducial(anchorMargin, topMarkerY);
     // Top Right
-    doc.rect(pageWidth - anchorMargin - anchorSize, anchorMargin, anchorSize, anchorSize, 'F');
-    // Bottom Left
-    doc.rect(anchorMargin, pageHeight - anchorMargin - anchorSize, anchorSize, anchorSize, 'F');
-    // Bottom Right
-    doc.rect(pageWidth - anchorMargin - anchorSize, pageHeight - anchorMargin - anchorSize, anchorSize, anchorSize, 'F');
+    drawFiducial(pageWidth - anchorMargin - anchorSize, topMarkerY);
 
-    // Text Header
+    // --- BOTTOM MARKERS ---
+    const bottomMarkerY = 277;
+
+    // Bottom Left
+    drawFiducial(anchorMargin, bottomMarkerY);
+    // Bottom Right
+    drawFiducial(pageWidth - anchorMargin - anchorSize, bottomMarkerY);
+
+    // Text Header (unchanged)
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
     doc.text((metadata.school || 'SCHOOL NAME').toUpperCase(), pageWidth / 2, 15, { align: 'center' });
@@ -459,12 +478,11 @@ export const generateAnswerSheet = (metadata: any) => {
     doc.text(`SUBJECT: ${(metadata.subject || '').toUpperCase()}`, pageWidth / 2, 25, { align: 'center' });
 
     // --- 2. Student Info Block (V2 - GHOST MODE) ---
-    // V2: Use Dashed Lines for non-essential boxes so OMR Engine ignores them (contour filtering)
     const startY = 30;
 
     doc.setLineWidth(0.3);
-    doc.setDrawColor(100); // Dark Gray instead of Black
-    doc.setLineDashPattern([2, 1], 0); // Dashed Line (2mm dash, 1mm gap)
+    doc.setDrawColor(100);
+    doc.setLineDashPattern([2, 1], 0);
 
     // Name Box
     doc.rect(15, startY, 130, 10);
@@ -487,16 +505,16 @@ export const generateAnswerSheet = (metadata: any) => {
         doc.setTextColor(100);
     }
 
-    // Score Box (Keep this dashed too)
+    // Score Box
     doc.rect(100, startY + 14, 95, 10);
     doc.text("SCORE:", 102, startY + 20);
     doc.setFont('helvetica', 'bold');
     doc.text(`/ ${totalItems}`, 185, startY + 20);
     doc.setFont('helvetica', 'normal');
 
-    // Reset Line Style for Bubbles
-    doc.setLineDashPattern([], 0); // Solid
-    doc.setDrawColor(0); // Black
+    // Reset Line Style
+    doc.setLineDashPattern([], 0);
+    doc.setDrawColor(0);
 
     // --- 3. Instructions ---
     doc.setTextColor(0);
@@ -505,25 +523,23 @@ export const generateAnswerSheet = (metadata: any) => {
     doc.text("INSTRUCTIONS: Fully shade the circle corresponding to your answer. Avoid erasures.", pageWidth / 2, startY + 30, { align: 'center' });
 
     // --- 4. Answer Grid Optimization (V2) ---
-    const itemsPerCol = 25; // 2 Columns of 25 is cleaner than 3 cols
+    const itemsPerCol = 25;
     const totalCols = Math.ceil(totalItems / itemsPerCol);
 
-    // Bigger Bubbles Config
-    const bubbleRadius = 3.5;
+    const bubbleRadius = 2.6;
     const bubbleSpacing = 9;
-    const optionCount = 4; // A, B, C, D
+    const optionCount = 4;
 
-    // Adjusted Row Height to prevent Footer Overlap
-    // Previous: 8.5mm * 25 = 212.5mm (Too tall)
-    // New: 7.2mm * 25 = 180mm. Fits within page limits.
-    const rowHeight = 7.2;
+    const rowHeight = 7.6; // 190mm total height for 25 rows
 
-    // Dynamic Centering Calculation
-    const blockWidth = 12 + (optionCount * bubbleSpacing);
-    const gridGap = 15; // Increased gap between columns
+    // Dynamic Centering
+    // Visual Width = Offset(10) + (3*9) + Radius~=3 = 40. Margin=2 -> 42.
+    // Previous width (48) caused Left-Heavy look (grid centered, but content left in grid).
+    const blockWidth = 42;
+    const gridGap = 15;
     const totalGridWidth = (totalCols * blockWidth) + ((totalCols - 1) * gridGap);
     const gridStartX = (pageWidth - totalGridWidth) / 2;
-    const gridStartY = startY + 38;
+    const gridStartY = 80;
 
     const options = ['A', 'B', 'C', 'D'];
 
@@ -531,54 +547,49 @@ export const generateAnswerSheet = (metadata: any) => {
     doc.setLineWidth(0.2);
 
     for (let i = 0; i < totalItems; i++) {
-        // Calculate grid position
         const colIndex = Math.floor(i / itemsPerCol);
         const rowIndex = i % itemsPerCol;
 
-        // Safety break
         if (colIndex > 3) break;
 
         const xBase = gridStartX + (colIndex * (blockWidth + gridGap));
         const yBase = gridStartY + (rowIndex * rowHeight);
 
+        // Adjust Per-Item Anchor Position for "Exactly Beside" alignment
+        // Vertical: Text is ~3mm high above baseline. Center is ~1.5mm up.
+        // Rect is 3mm. To center-align:
+        // Text Center Y ≈ yBase - 1.5
+        // Rect Top Y = Text Center Y - (Height/2) = (yBase - 1.5) - 1.5 = yBase - 3.0
+        // We'll use yBase - 2.8 to be safe.
+        // Horizontal: Gap of 1.5mm. xBase - 1.5 (end) - 3.0 (width) = xBase - 4.5
+        doc.setFillColor(0, 0, 0);
+        doc.rect(xBase - 4.5, yBase - 2.8, 3.0, 3.0, 'F');
+
         // Item Number
         doc.setFontSize(10);
         doc.setTextColor(0, 0, 0);
-        doc.text(`${i + 1}.`, xBase, yBase);
+        doc.text(String(i + 1) + ".", xBase, yBase);
 
         // Bubbles
         options.forEach((opt, optIdx) => {
-            const bubbleX = xBase + 12 + (optIdx * bubbleSpacing);
+            const bubbleX = xBase + 10 + (optIdx * bubbleSpacing);
             const bubbleY = yBase - 1;
 
-            // Draw Circle
             doc.setDrawColor(0);
             doc.circle(bubbleX, bubbleY, bubbleRadius, 'S');
 
-            // Draw Letter inside (Very Light Gray)
-            doc.setTextColor(200, 200, 200);
+            doc.setTextColor(150, 150, 150);
             doc.setFontSize(6);
             const textWidth = doc.getTextWidth(opt);
-            doc.text(opt, bubbleX - (textWidth / 2), bubbleY + 0.8); // +0.8 Visual centering
+            doc.text(opt, bubbleX - (textWidth / 2), bubbleY + 0.8);
         });
     }
 
     // --- Footer / Signatories ---
     doc.setTextColor(0, 0, 0);
-    // Footer Position Logic:
-    // Page Height: 297mm
+    // Footer Position Logic: Page Height 297mm
     // Bottom Markers: Y=277 to 287mm
-    // Safe Zone for Footer: Y=270mm (Just below grid, above markers)
-    const footerY = 270;
-
-    doc.setLineWidth(0.5);
-
-    doc.line(20, footerY, 80, footerY);
-    doc.setFontSize(9);
-    doc.text("Student's Signature", 50, footerY + 5, { align: 'center' });
-
-    doc.line(120, footerY, 180, footerY);
-    doc.text("Parent's Signature", 150, footerY + 5, { align: 'center' });
+    // Signatures Removed
 
     doc.setFontSize(7);
     doc.setTextColor(150);
@@ -591,8 +602,6 @@ export const generateAnswerSheet = (metadata: any) => {
 export const generateConsolidatedReportPDF = (data: ConsolidatedData, aiInsight?: string | null) => {
     const doc = new jsPDF();
     const pageWidth = doc.internal.pageSize.width;
-    // ... (rest of function)
-
 
     // --- Header ---
     doc.setFillColor(79, 70, 229); // Indigo-600
@@ -751,21 +760,34 @@ export const generateConsolidatedReportPDF = (data: ConsolidatedData, aiInsight?
 
     // --- 4. AI Insights ---
     if (aiInsight) {
-        if (y > 230) { doc.addPage(); y = 20; }
+        let finalY = (doc as any).lastAutoTable.finalY + 15;
+        if (finalY > 230) { doc.addPage(); finalY = 20; }
 
         doc.setFontSize(12);
+        doc.setFont('helvetica', 'bold');
         doc.setTextColor(79, 70, 229);
-        doc.text("4. AI DEPARTMENTAL INSIGHTS", 14, y);
-        y += 8;
+        doc.text("4. AI DEPARTMENTAL INSIGHTS", 14, finalY);
 
+        finalY += 8;
         doc.setFontSize(10);
         doc.setTextColor(0, 0, 0);
         doc.setFont('helvetica', 'normal');
 
-        const cleanText = aiInsight.replace(/\*\*/g, '').replace(/###/g, '').replace(/##/g, '');
-        const splitText = doc.splitTextToSize(cleanText, pageWidth - 28);
-        doc.text(splitText, 14, y);
+        const cleanReport = aiInsight.replace(/\*\*/g, '').replace(/###/g, '').replace(/##/g, '');
+        const splitText = doc.splitTextToSize(cleanReport, pageWidth - 28);
+
+        if (finalY + (splitText.length * 5) > 280) {
+            const linesPerPage = Math.floor((280 - finalY) / 5);
+            const firstBlock = splitText.slice(0, linesPerPage);
+            const rest = splitText.slice(linesPerPage);
+
+            doc.text(firstBlock, 14, finalY);
+            doc.addPage();
+            doc.text(rest, 14, 20);
+        } else {
+            doc.text(splitText, 14, finalY);
+        }
     }
 
-    doc.save(`Consolidated_Report_${data.subject}_${data.gradeLevel}.pdf`);
+    doc.save(`${(data.examTitle || 'Consolidated_Report').replace(/\s+/g, '_')}.pdf`);
 };

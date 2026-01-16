@@ -148,7 +148,10 @@ export const generateDepartmentalInsights = async (data: ConsolidatedData): Prom
     try {
         const ai = getAI();
         const leastMastered = data.competencies.filter(c => c.interpretation !== 'Mastered').map(c => `${c.description} (${c.mps.toFixed(1)}%)`).join(', ');
-        const sectionComparison = data.sections.map(s => `${s.name}: ${s.mps.toFixed(1)}%`).join(', ');
+
+        // Flatten sections from all schools
+        const allSections = data.schools.flatMap(school => school.sections);
+        const sectionComparison = allSections.map(s => `${s.name}: ${s.mps.toFixed(1)}%`).join(', ');
 
         const prompt = `
         You are a Department Head giving a report on the ${data.gradeLevel} ${data.subject} ${data.examTitle}.

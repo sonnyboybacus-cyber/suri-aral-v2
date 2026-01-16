@@ -1,5 +1,6 @@
 import React from 'react';
 import { TestMetadata, SchoolInfo, ClassInfo, Teacher, Subject } from '../../types';
+import { OMR_ITEM_OPTIONS } from '../../services/omrEngine';
 import { QuestionBank, TOS } from '../../types/questionBank';
 import { FileTextIcon, BrainCircuitIcon, XIcon, CheckCircleIcon, LayoutGridIcon, BookOpenIcon, UploadIcon } from '../icons';
 import { useAcademicConfig } from '../../hooks/useAcademicConfig';
@@ -165,7 +166,7 @@ export const AnalysisSetup: React.FC<AnalysisSetupProps> = ({
                             )}
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Quarter</label>
                                 <select
@@ -197,7 +198,38 @@ export const AnalysisSetup: React.FC<AnalysisSetupProps> = ({
                                 className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm focus:ring-2 focus:ring-indigo-500 transition-all font-medium disabled:opacity-50"
                             >
                                 <option value="">Select Subject...</option>
-                                {subjects.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                                {(() => {
+                                    // 1. Find Active Class
+                                    const activeClass = classes.find(c => c.id === selectedClassId);
+
+                                    // 2. Check for Class-Assigned Subjects
+                                    const classSubjects = activeClass?.subjects || [];
+                                    if (classSubjects.length > 0) {
+                                        return classSubjects.map((s: any) => (
+                                            <option key={s.id || s.name} value={s.name}>{s.name}</option>
+                                        ));
+                                    }
+
+                                    // 3. Fallback: Filter by Grade Level (Normalized)
+                                    if (activeClass?.gradeLevel || metadata.gradeLevel) {
+                                        const targetGradeRaw = activeClass?.gradeLevel || metadata.gradeLevel || '';
+                                        const targetGrade = targetGradeRaw.replace(/[^0-9]/g, '');
+
+                                        const gradeFiltered = subjects.filter(s => {
+                                            const subjGrade = (s.gradeLevel || '').toString().replace(/[^0-9]/g, '');
+                                            return subjGrade === targetGrade;
+                                        });
+
+                                        if (gradeFiltered.length > 0) {
+                                            return gradeFiltered.map(s => (
+                                                <option key={s.id} value={s.name}>{s.name}</option>
+                                            ));
+                                        }
+                                    }
+
+                                    // 4. Last Resort: Show All
+                                    return subjects.map(s => <option key={s.id} value={s.name}>{s.name}</option>);
+                                })()}
                             </select>
                         </div>
                     </div>
@@ -205,16 +237,57 @@ export const AnalysisSetup: React.FC<AnalysisSetupProps> = ({
                     {/* Column 3: Stats & Teacher */}
                     <div className="space-y-4">
                         <h4 className="text-xs font-bold text-indigo-500 uppercase tracking-wider mb-2">3. Stats & Teacher</h4>
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Items</label>
-                                <input
-                                    type="number"
-                                    min="1"
-                                    value={metadata.totalItems || ''}
-                                    onChange={(e) => onMetadataChange({ ...metadata, totalItems: parseInt(e.target.value) || 0 })}
-                                    className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-medium"
-                                />
+                                {OMR_ITEM_OPTIONS.includes(metadata.totalItems) || metadata.totalItems === 0 ? (
+                                    <div className="relative">
+                                        <select
+                                            value={metadata.totalItems || 0}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                if (val === 'custom') {
+                                                    // Switch to custom mode by triggering a re-render with a non-standard value
+                                                    onMetadataChange({ ...metadata, totalItems: 1 });
+                                                } else {
+                                                    onMetadataChange({ ...metadata, totalItems: parseInt(val) || 0 });
+                                                }
+                                            }}
+                                            className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-medium appearance-none cursor-pointer"
+                                        >
+                                            <option value={0}>-</option>
+                                            {OMR_ITEM_OPTIONS.map((n: number) => (
+                                                <option key={n} value={n}>{n}</option>
+                                            ))}
+                                            <option value="custom">Custom...</option>
+                                        </select>
+                                        <svg className="absolute right-3 top-3 w-4 h-4 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </div>
+                                ) : (
+                                    <div className="relative flex items-center gap-1">
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            value={metadata.totalItems || ''}
+                                            onChange={(e) => onMetadataChange({ ...metadata, totalItems: parseInt(e.target.value) || 0 })}
+                                            placeholder="#"
+                                            className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-medium"
+                                            autoFocus
+                                        />
+                                        <button
+                                            onClick={() => onMetadataChange({ ...metadata, totalItems: 0 })}
+                                            type="button"
+                                            title="Switch to Presets"
+                                            className="p-2 text-slate-400 hover:text-indigo-500 transition-colors"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Test Takers</label>

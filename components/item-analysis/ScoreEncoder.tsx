@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Student, TestMetadata } from '../../types';
-import { TrashIcon, CheckCircleIcon, XIcon, UserPlusIcon, BarChart3Icon, CameraIcon, UploadIcon, MessageSquareIcon, TrendingUpIcon, PrinterIcon, SpinnerIcon } from '../icons';
+import { TrashIcon, CheckCircleIcon, XIcon, UserPlusIcon, BarChart3Icon, CameraIcon, UploadIcon, MessageSquareIcon, TrendingUpIcon, PrinterIcon, SpinnerIcon, EraserIcon } from '../icons';
 import { OMRScanner } from '../omr/OMRScanner';
 import { gradeAnswerSheet } from '../../services/omrEngine';
 
@@ -97,6 +97,7 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
     // Camera State
     const [isCameraOpen, setIsCameraOpen] = useState(false);
     const [activeStudentIndex, setActiveStudentIndex] = useState<number | null>(null);
+    const [uploadedImageForScan, setUploadedImageForScan] = useState<string | null>(null);
 
     // Modal States
     const [editingFeedbackIndex, setEditingFeedbackIndex] = useState<number | null>(null);
@@ -110,6 +111,16 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
         onStudentsChange(newStudents);
     };
 
+    const handleClearRow = (studentIndex: number) => {
+        if (window.confirm(`Are you sure you want to clear all scores for ${students[studentIndex].name}?`)) {
+            const newStudents = [...students];
+            newStudents[studentIndex].studentAnswers = new Array(metadata.totalItems).fill('');
+            onStudentsChange(newStudents);
+        }
+    };
+
+
+
     const handleSaveFeedback = (feedback: string) => {
         if (editingFeedbackIndex !== null) {
             const newStudents = [...students];
@@ -122,12 +133,14 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
     // Camera Logic
     const startCamera = (index: number) => {
         setActiveStudentIndex(index);
+        setUploadedImageForScan(null); // Ensure no previous upload
         setIsCameraOpen(true);
     };
 
     const stopCamera = () => {
         setIsCameraOpen(false);
         setActiveStudentIndex(null);
+        setUploadedImageForScan(null);
     };
 
     const handleOMRScanComplete = (answers: string[]) => {
@@ -142,38 +155,11 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
         const file = e.target.files?.[0];
         if (!file) return;
 
-        try {
-            const img = new Image();
-            img.onload = async () => {
-                const canvas = document.createElement('canvas');
-                canvas.width = img.width;
-                canvas.height = img.height;
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                    ctx.drawImage(img, 0, 0);
-                    try {
-                        const gradingResult = await gradeAnswerSheet(canvas, metadata.totalItems);
-                        const newStudents = [...students];
-                        newStudents[index].studentAnswers = gradingResult.answers;
-                        onStudentsChange(newStudents);
-                        if (gradingResult.answers.length === 0) {
-                            // Show debug view for troubleshooting
-                            setDebugImage(canvas.toDataURL());
-                        } else {
-                            alert(`Scan Complete! Detected ${gradingResult.answers.length} answers.`);
-                        }
-                    } catch (err: any) {
-                        console.error(err);
-                        alert(err.message || "Failed to grade image.");
-                        // Show debug on error too
-                        setDebugImage(canvas.toDataURL());
-                    }
-                }
-            };
-            img.src = URL.createObjectURL(file);
-        } catch (err) {
-            console.error(err);
-        }
+        // Create Object URL and open OMR Scanner in Calibration Mode
+        const objectUrl = URL.createObjectURL(file);
+        setActiveStudentIndex(index);
+        setUploadedImageForScan(objectUrl);
+        setIsCameraOpen(true);
     };
 
     if (metadata.totalItems === 0) {
@@ -198,7 +184,7 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
                 <div className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in" onClick={() => setDebugImage(null)}>
                     <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-4xl max-h-[90vh] overflow-auto p-2" onClick={e => e.stopPropagation()}>
                         <div className="flex justify-between items-center p-2 mb-2 border-b border-slate-100 dark:border-slate-700">
-                            <h3 className="font-bold text-red-500">Validation Failed - Debug View</h3>
+                            <h3 className="font-bold text-slate-800 dark:text-slate-100">OMR Scan Analysis</h3>
                             <button onClick={() => setDebugImage(null)}><XIcon className="w-6 h-6" /></button>
                         </div>
                         <img src={debugImage} alt="Debug" className="max-w-full h-auto rounded border-2 border-red-500" />
@@ -226,6 +212,7 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
                 onClose={stopCamera}
                 onScanComplete={handleOMRScanComplete}
                 totalItems={metadata.totalItems}
+                initialImage={uploadedImageForScan}
             />
 
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
@@ -255,8 +242,8 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
                     <table className="w-full text-sm text-left">
                         <thead className="text-xs text-slate-500 uppercase bg-slate-50 dark:bg-slate-900/50 border-b border-slate-100 dark:border-slate-700">
                             <tr>
-                                <th className="px-6 py-4 font-bold w-16 sticky left-0 z-10 bg-slate-50 dark:bg-slate-900/50">#</th>
-                                <th className="px-6 py-4 font-bold min-w-[200px] sticky left-16 z-10 bg-slate-50 dark:bg-slate-900/50 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.05)]">Student Name</th>
+                                <th className="px-3 md:px-6 py-4 font-bold w-10 md:w-16 sticky left-0 z-10 bg-slate-50 dark:bg-slate-900/50">#</th>
+                                <th className="px-3 md:px-6 py-4 font-bold min-w-[140px] md:min-w-[200px] sticky left-10 md:left-16 z-10 bg-slate-50 dark:bg-slate-900/50 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.05)]">Student Name</th>
                                 {Array.from({ length: metadata.totalItems }).map((_, i) => (
                                     <th key={i} className="px-2 py-4 font-bold text-center min-w-[3rem]">
                                         {i + 1}
@@ -271,8 +258,8 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
                                 const score = student.studentAnswers.reduce((acc, ans, i) => acc + (ans && metadata.answerKey?.[i] && ans === metadata.answerKey?.[i] ? 1 : 0), 0);
                                 return (
                                     <tr key={student.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors group">
-                                        <td className="px-6 py-4 font-medium text-slate-500 sticky left-0 z-10 bg-white dark:bg-slate-800 group-hover:bg-indigo-50/10 transition-colors">{sIdx + 1}</td>
-                                        <td className="px-6 py-4 sticky left-16 z-10 bg-white dark:bg-slate-800 group-hover:bg-indigo-50/10 transition-colors shadow-[2px_0_4px_-1px_rgba(0,0,0,0.05)]">
+                                        <td className="px-3 md:px-6 py-4 font-medium text-slate-500 sticky left-0 z-10 bg-white dark:bg-slate-800 group-hover:bg-indigo-50/10 transition-colors">{sIdx + 1}</td>
+                                        <td className="px-3 md:px-6 py-4 sticky left-10 md:left-16 z-10 bg-white dark:bg-slate-800 group-hover:bg-indigo-50/10 transition-colors shadow-[2px_0_4px_-1px_rgba(0,0,0,0.05)]">
                                             <span className="font-bold text-slate-800 dark:text-slate-200">{student.name}</span>
                                         </td>
                                         {Array.from({ length: metadata.totalItems }).map((_, i) => (
@@ -316,6 +303,13 @@ export const ScoreEncoder: React.FC<ScoreEncoderProps> = ({
                                                     title="Analysis History"
                                                 >
                                                     <TrendingUpIcon className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => handleClearRow(sIdx)}
+                                                    className="p-1.5 rounded-md hover:bg-amber-100 text-amber-600"
+                                                    title="Clear All Answers"
+                                                >
+                                                    <EraserIcon className="w-4 h-4" />
                                                 </button>
                                             </div>
                                         </td>

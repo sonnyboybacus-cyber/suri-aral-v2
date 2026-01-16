@@ -1,32 +1,70 @@
+import { preprocessCameraImage } from './omr/cameraEngine';
+import { preprocessUploadImage } from './omr/uploadEngine';
+import { predictBubble } from './ai/bubbleClassifier'; // Import AI Service
 
-/**
- * SURI-ARAL OMR ENGINE
- * Client-Side Optical Mark Recognition using OpenCV.js
- * 
- * Based on the Python implementation:
- * 1. Find Corners (ArUco or Document Contour)
- * 2. Warp Perspective
- * 3. Threshold (Otsu)
- * 4. Grid Grading (Pixel Counting)
- */
+export type OMRSourceType = 'camera' | 'upload';
 
 declare global {
     interface Window {
         cv: any;
-        cvPromise: Promise<void> | null;
+        cvPromise: Promise<void>;
     }
 }
 
-// Ensure OpenCV is loaded
-// Ensure OpenCV is loaded
+export const OMR_ITEM_OPTIONS = [15, 25, 30, 40, 50, 60, 75];
+
+// OMR Calibration Constants
+interface LayoutCalibration {
+    minX: number; // Left margin for bubble detection (ignores item numbers)
+    minY: number; // Top margin
+    fillThreshold: number; // Pixel fill ratio to consider "marked"
+    innerROIPadding: number; // Percentage to shrink ROI (ignore bubble borders)
+    slotTolerance: number; // Max distance from slot center to bubble center
+    minArea: number; // Min bubble area
+    arMin: number; // Aspect ratio min
+    arMax: number; // Aspect ratio max
+    threshBlockSize: number; // Adaptive threshold block size
+}
+
+interface TemplateConfig {
+    isSingleColumn: boolean;
+    leftColumnRows: number;
+    rightColumnRows: number;
+    columns?: number; // For 4-column layouts
+}
+
+const LAYOUT_CALIBRATION: Record<number, LayoutCalibration> = {
+    // minY increased to 370 because Fiducials are now at PAGE CORNERS (Y=10 to Y=277).
+    // The Header (Y=0 to Y=80) is included in the warp but must be ignored.
+    // 70mm gap / 190mm width * 1000px width ≈ 368px. Rounded to 370.
+    15: { minX: 100, minY: 370, fillThreshold: 0.50, innerROIPadding: 0.40, slotTolerance: 40, minArea: 100, arMin: 0.6, arMax: 1.4, threshBlockSize: 99 },
+    25: { minX: 100, minY: 370, fillThreshold: 0.50, innerROIPadding: 0.40, slotTolerance: 40, minArea: 100, arMin: 0.6, arMax: 1.4, threshBlockSize: 99 },
+    30: { minX: 100, minY: 370, fillThreshold: 0.35, innerROIPadding: 0.40, slotTolerance: 40, minArea: 100, arMin: 0.7, arMax: 1.3, threshBlockSize: 99 },
+    40: { minX: 100, minY: 370, fillThreshold: 0.35, innerROIPadding: 0.40, slotTolerance: 40, minArea: 100, arMin: 0.7, arMax: 1.3, threshBlockSize: 99 },
+    50: { minX: 100, minY: 370, fillThreshold: 0.35, innerROIPadding: 0.40, slotTolerance: 40, minArea: 100, arMin: 0.7, arMax: 1.3, threshBlockSize: 99 },
+    60: { minX: 100, minY: 370, fillThreshold: 0.35, innerROIPadding: 0.40, slotTolerance: 40, minArea: 100, arMin: 0.7, arMax: 1.3, threshBlockSize: 99 },
+    75: { minX: 100, minY: 370, fillThreshold: 0.35, innerROIPadding: 0.40, slotTolerance: 40, minArea: 100, arMin: 0.7, arMax: 1.3, threshBlockSize: 99 },
+};
+
+// Fallback logic helpers
+const getLayoutCalibration = (items: number): LayoutCalibration => {
+    return LAYOUT_CALIBRATION[items] || LAYOUT_CALIBRATION[50];
+};
+
+const TEMPLATE_CONFIGS: Record<number, TemplateConfig> = {
+    15: { isSingleColumn: true, leftColumnRows: 15, rightColumnRows: 0 },
+    25: { isSingleColumn: true, leftColumnRows: 25, rightColumnRows: 0 },
+    30: { isSingleColumn: false, leftColumnRows: 25, rightColumnRows: 5 },
+    40: { isSingleColumn: false, leftColumnRows: 20, rightColumnRows: 20 },
+    50: { isSingleColumn: false, leftColumnRows: 25, rightColumnRows: 25 },
+    60: { isSingleColumn: false, leftColumnRows: 30, rightColumnRows: 30 },
+    75: { isSingleColumn: false, leftColumnRows: 25, rightColumnRows: 50 },
+};
+
 export const loadOpenCV = (): Promise<void> => {
-    // 1. Check if already loaded
     if (window.cv && window.cv.Mat) return Promise.resolve();
     if (window.cvPromise) return window.cvPromise;
-
-    // 2. Wait for the static script in index.html to finish loading
     window.cvPromise = new Promise((resolve, reject) => {
-        // Poll every 50ms for 10 seconds
         let attempts = 0;
         const checkCV = setInterval(() => {
             attempts++;
@@ -36,586 +74,813 @@ export const loadOpenCV = (): Promise<void> => {
             } else if (window.cv && window.cv.getBuildInformation) {
                 clearInterval(checkCV);
                 resolve();
-            } else if (attempts > 200) { // 10 seconds
+            } else if (attempts > 200) {
                 clearInterval(checkCV);
                 reject(new Error("Timeout waiting for OpenCV to load from index.html"));
             }
         }, 50);
     });
-
     return window.cvPromise;
 };
 
-// Helper: Sort contours top-to-bottom or left-to-right
-const sortContours = (cnts: any[], method = "top-to-bottom") => {
-    const boundingBoxes = cnts.map(c => window.cv.boundingRect(c));
-    const indexed = cnts.map((c, i) => ({ c, box: boundingBoxes[i], i }));
-
-    indexed.sort((a, b) => {
-        if (method === "top-to-bottom") return a.box.y - b.box.y;
-        if (method === "left-to-right") return a.box.x - b.box.x;
-        // Simple approximation
-        return 0;
-    });
-
-    return indexed.map(x => x.c);
+// Helper to delegate preprocessing
+const getProcessedImage = async (
+    imageSource: HTMLImageElement | HTMLCanvasElement | string,
+    type: OMRSourceType
+) => {
+    if (type === 'camera') {
+        return await preprocessCameraImage(imageSource);
+    } else {
+        return await preprocessUploadImage(imageSource);
+    }
 };
 
-// Helper: 4-Point Transform
-const fourPointTransform = (image: any, pts: any) => {
-    const cv = window.cv;
-    // Pts is a Mat of size 4x2
-    // We need to order them: TL, TR, BR, BL
-    // Simplified ordering (assuming mostly upright)
-    // Actually, we must order points properly
+// --- HELPER: SORT CONTOURS ---
+const sortContours = (cnts: any[], method: "top-to-bottom" | "left-to-right" = "left-to-right"): any[] => {
+    const reverse = false;
+    const sorted = cnts.sort((a, b) => {
+        const ra = window.cv.boundingRect(a);
+        const rb = window.cv.boundingRect(b);
+        if (method === "left-to-right") return ra.x - rb.x;
+        else return ra.y - rb.y;
+    });
+    return sorted;
+};
 
-    // Convert to array
-    const points = [];
-    for (let i = 0; i < 4; i++) {
-        points.push({ x: pts.floatAt(i, 0), y: pts.floatAt(i, 1) });
+export interface DebugBubble {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    fill: number; // 0-1
+    label: string; // "A", "B"...
+    itemIndex: number; // 1-based (e.g. 1..50)
+    isMarked: boolean;
+    colOffset: { x: number, y: number }; // Relative to warped image
+}
+
+interface ColumnResult { // Not exported? Wait.
+    answers: string[];
+    bubbles: DebugBubble[];
+    anchors?: { x: number, y: number, r: number }[]; // x,y center, r radius
+    warpedImage?: string; // DataURL
+}
+
+// 5. GRADE SINGLE COLUMN (Now Async for AI)
+export const processSingleColumnImage = async (
+    cv: any,
+    colMat: any, // The WARPED column image (cv.Mat)
+    expectedItems: number,
+    calibration: { minY: number, maxY: number, pitch?: number },
+    colLabel: string = "Col",
+    startItemIndex: number = 0,
+    globalOffset: { x: number, y: number } = { x: 0, y: 0 },
+    scanOffset: { x: number, y: number } = { x: 0, y: 0 } // NEW: Manual Nudge
+): Promise<ColumnResult> => { // Returns specific structure
+    // CONSTANTS FOR 1000px WIDTH (190mm physical width)
+    const PX_PER_MM = 1000 / 190; // ~5.26 px/mm
+    const ANCHOR_SIZE_MM = 3.0;
+    const ANCHOR_MIN_AREA_MM2 = 2; // Min Area in mm^2 (e.g., 2mm x 1mm)
+    const ANCHOR_MAX_AREA_MM2 = 25; // Max Area in mm^2 (e.g., 5mm x 5mm)
+    // Offset Logic:
+    // Anchor X (Left Edge) = xBase - 4.5. Width = 3. Center = xBase - 3.0.
+    // Bubble A X (Center) = xBase + 10.
+    // Dist = 10 - (-3.0) = 13.0 mm.
+    const ANCHOR_TO_A_OFFSET_MM = 13.0;
+    const BUBBLE_SPACING_MM = 9.0;
+
+    // (A) Preprocessing inside the slice
+    const gray = new cv.Mat();
+    if (colMat.channels() > 1) {
+        cv.cvtColor(colMat, gray, cv.COLOR_RGBA2GRAY);
+    } else {
+        colMat.copyTo(gray);
     }
 
-    // Sort by Y to separate Top/Bottom
-    points.sort((a, b) => a.y - b.y);
-    const top = points.slice(0, 2).sort((a, b) => a.x - b.x); // TL, TR
-    const bottom = points.slice(2, 4).sort((a, b) => a.x - b.x); // BL, BR => Wait, usually BL is first x
+    const blurred = new cv.Mat();
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
 
-    const tl = top[0];
-    const tr = top[1];
-    const bl = bottom[0];
-    const br = bottom[1];
+    // const calibration = getLayoutCalibration(expectedItems); // Removed, now passed in
+    const binary = new cv.Mat();
+    // Use lower block size for local contrast adaptation
+    cv.adaptiveThreshold(blurred, binary, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 51, 5);
 
-    // Width
-    const widthA = Math.sqrt(Math.pow(br.x - bl.x, 2) + Math.pow(br.y - bl.y, 2));
-    const widthB = Math.sqrt(Math.pow(tr.x - tl.x, 2) + Math.pow(tr.y - tl.y, 2));
-    const maxWidth = Math.max(widthA, widthB);
+    // MORPHOLOGICAL CLOSING (Fill gaps in pencil marks)
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    const closed = new cv.Mat();
+    cv.morphologyEx(binary, closed, cv.MORPH_CLOSE, kernel);
 
-    // Height
-    const heightA = Math.sqrt(Math.pow(tr.x - br.x, 2) + Math.pow(tr.y - br.y, 2));
-    const heightB = Math.sqrt(Math.pow(tl.x - bl.x, 2) + Math.pow(tl.y - bl.y, 2));
-    const maxHeight = Math.max(heightA, heightB);
+    // Reuse closed binary for contours
+    const cnts = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(closed, cnts, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    // Correct format for perspective transform
-    // Note: ordering must match: TL, TR, BR, BL, but bl/br are swapped in our sort logic often.
-    // Let's assume the points are correct.
+    // 1. DETECT ELEMENTS
+    const anchors: any[] = [];
 
-    // Create Mat from Array directly (rows, cols, type, array)
-    // 4 rows, 1 col, 2 channels (x,y) = CV_32FC2
-    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
-    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, maxWidth, 0, maxWidth, maxHeight, 0, maxHeight]);
+    // Relaxed filters for Camera
+    for (let i = 0; i < cnts.size(); i++) {
+        const c = cnts.get(i);
+        const rect = cv.boundingRect(c);
+        const ar = rect.width / rect.height;
+        const area = cv.contourArea(c);
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
 
-    const M = cv.getPerspectiveTransform(srcTri, dstTri);
-    const warped = new cv.Mat();
-    cv.warpPerspective(image, warped, M, new cv.Size(maxWidth, maxHeight));
+        if (cy < calibration.minY) continue;
 
-    srcTri.delete(); dstTri.delete(); M.delete();
-    return warped;
+        // Solidity Check (Area / RectArea)
+        // A square anchor fill is near 1.0 (0.9-1.0)
+        // Text characters (like "I" or "T") have lower solidity or different AR
+        const solidity = area / (rect.width * rect.height);
+
+        // Anchor: 3mm square = ~250px area.
+        // Allow range 80 - 600 (Raised min from 50 to 80 to avoid small text noise)
+        // Added solidity > 0.85 check
+        if (area > 80 && area < 600 && ar > 0.6 && ar < 1.4 && solidity > 0.85) {
+            anchors.push({ c, cx, cy, rect, area });
+        }
+    }
+
+    // 2. IDENTIFY ANCHOR LINE (Leftmost Vertical Column)
+    // Find peak X
+    const xBins = new Array(Math.ceil(colMat.cols / 10)).fill(0);
+    anchors.forEach(a => {
+        const bin = Math.floor(a.cx / 10);
+        if (bin < xBins.length) xBins[bin]++;
+    });
+
+    let anchorXPeak = -1;
+    // Search left-to-right for first strong peak (>3 items)
+    for (let i = 0; i < xBins.length; i++) {
+        if (xBins[i] >= 3) {
+            anchorXPeak = i * 10 + 5;
+            break;
+        }
+    }
+
+    let validAnchors: any[] = [];
+    if (anchorXPeak !== -1) {
+        validAnchors = anchors.filter(a => Math.abs(a.cx - anchorXPeak) < 25); // +/- 25px
+        validAnchors.sort((a, b) => a.cy - b.cy);
+    }
+
+    // 3. REFINE ROW Ys
+    let medianPitch = 0;
+    if (validAnchors.length > 1) {
+        const gaps = [];
+        for (let i = 1; i < validAnchors.length; i++) {
+            gaps.push(validAnchors[i].cy - validAnchors[i - 1].cy);
+        }
+        gaps.sort((a, b) => a - b);
+        medianPitch = gaps[Math.floor(gaps.length / 2)];
+    }
+
+    // Scale Logic
+    const ROW_HEIGHT_MM = 7.6; // From pdfGenerator
+    // If pitch is unreasonable (e.g. < 20px), fallback to standard
+    const STANDARD_PITCH = 50;
+
+    // Safety check for pitch
+    let usedPitch = medianPitch;
+    if (usedPitch < 25 || usedPitch > 120) {
+        usedPitch = STANDARD_PITCH;
+        console.warn(`[OMR] Pitch outlier (${medianPitch}), using standard (${STANDARD_PITCH})`);
+    }
+
+    // DYNAMIC SCALE FACTOR
+    const dynamicPxPerMm = usedPitch / ROW_HEIGHT_MM;
+    console.log(`[OMR] Dynamic Scale: ${dynamicPxPerMm.toFixed(2)} px/mm (Pitch: ${usedPitch})`);
+
+    // Reconstruct Grid Rows
+    // Start from First Anchor, project downwards with Median Pitch.
+    // Align with existing anchors where possible to correct drift.
+    let rowYs: number[] = [];
+    if (validAnchors.length > 0) {
+        // Interpolate Logic
+        for (let i = 0; i < validAnchors.length - 1; i++) {
+            const a1 = validAnchors[i];
+            const a2 = validAnchors[i + 1];
+            rowYs.push(a1.cy);
+
+            const dist = a2.cy - a1.cy;
+            // Round to nearest pitch multiple
+            const missedRows = Math.round(dist / usedPitch) - 1;
+            if (missedRows > 0) {
+                const step = dist / (missedRows + 1);
+                for (let k = 1; k <= missedRows; k++) {
+                    rowYs.push(a1.cy + step * k);
+                }
+            }
+        }
+        rowYs.push(validAnchors[validAnchors.length - 1].cy);
+
+        // --- PHASE 4V: TOP ROW BACKFILL ---
+        // Determine if we missed the first row(s) because the top anchor was not detected.
+        // Heuristic: Check 1 pitch ABOVE the first detected row.
+        // If there are bubbles there, we backfill.
+
+        const firstY = rowYs[0];
+        const checkY = firstY - usedPitch;
+
+        // Only check if we are still well within image bounds (> minY)
+        if (checkY > calibration.minY) {
+            // How to check? Scan the horizontal slots at checkY
+            // We need slotCenters (calculated later). Let's calc temporary ones here.
+            // Simplified: Just use same logic as grading.
+
+            const anchorX = anchorXPeak !== -1 ? anchorXPeak : 50;
+            const dynamicPx = usedPitch / ROW_HEIGHT_MM;
+            const offA = ANCHOR_TO_A_OFFSET_MM * dynamicPx;
+            const pitchX = BUBBLE_SPACING_MM * dynamicPx;
+            const rad = Math.floor(2.6 * dynamicPx * 0.9);
+
+            const tempSlots = [
+                anchorX + offA,
+                anchorX + offA + pitchX,
+                anchorX + offA + pitchX * 2,
+                anchorX + offA + pitchX * 3
+            ];
+
+            let markedCount = 0;
+            tempSlots.forEach(cx => {
+                const x = Math.max(0, cx - rad);
+                const y = Math.max(0, checkY - rad);
+                if (x + rad * 2 < closed.cols && y + rad * 2 < closed.rows) {
+                    const roi = closed.roi(new cv.Rect(x, y, rad * 2, rad * 2));
+                    const fill = cv.countNonZero(roi) / (rad * 2 * rad * 2);
+                    roi.delete();
+                    if (fill > 0.25) markedCount++; // Strong signal check
+                }
+            });
+
+            if (markedCount > 0) {
+                console.log(`[OMR ${colLabel}] Detected missing top row at Y=${checkY.toFixed(1)}. Backfilling.`);
+                rowYs.unshift(checkY);
+
+                // Double check 2 rows up? (Unlikely for camera, but possible)
+                const checkY2 = checkY - usedPitch;
+                if (checkY2 > calibration.minY) {
+                    let markedCount2 = 0;
+                    tempSlots.forEach(cx => {
+                        const x = Math.max(0, cx - rad);
+                        const y = Math.max(0, checkY2 - rad);
+                        if (x + rad * 2 < closed.cols && y + rad * 2 < closed.rows) {
+                            const roi = closed.roi(new cv.Rect(x, y, rad * 2, rad * 2));
+                            const fill = cv.countNonZero(roi) / (rad * 2 * rad * 2);
+                            roi.delete();
+                            if (fill > 0.25) markedCount2++;
+                        }
+                    });
+                    if (markedCount2 > 0) {
+                        rowYs.unshift(checkY2);
+                    }
+                }
+            }
+        }
+    } else {
+        console.warn(`[OMR] No anchors found for ${colLabel}. Using heuristic.`);
+    }
+
+    // 4. DETERMINE SLOT X-COORDINATES
+    const anchorX = anchorXPeak !== -1 ? anchorXPeak : 50;
+
+    // Use DYNAMIC SCALE for precision
+    const OFFSET_A_PX = ANCHOR_TO_A_OFFSET_MM * dynamicPxPerMm;
+    const PITCH_PX = BUBBLE_SPACING_MM * dynamicPxPerMm;
+
+    const slotCenters = [
+        anchorX + OFFSET_A_PX,
+        anchorX + OFFSET_A_PX + PITCH_PX,
+        anchorX + OFFSET_A_PX + PITCH_PX * 2,
+        anchorX + OFFSET_A_PX + PITCH_PX * 3
+    ];
+
+    console.log(`[OMR ${colLabel}] AnchorX: ${anchorX} (${anchorXPeak !== -1 ? 'Locked' : 'Est'}), OffsetA: ${OFFSET_A_PX.toFixed(1)}, Pitch: ${PITCH_PX.toFixed(1)}`);
+
+    // 5. GRADE
+    const answers: string[] = [];
+    const debugBubbles: DebugBubble[] = [];
+
+    // Pad Rows if necessary
+    // A) Internal Interpolation (Fix missing middle rows caused by faded anchors)
+    rowYs.sort((a, b) => a - b);
+    const interpolatedYs: number[] = [];
+    if (rowYs.length > 0) {
+        interpolatedYs.push(rowYs[0]);
+        for (let i = 0; i < rowYs.length - 1; i++) {
+            const current = rowYs[i];
+            const next = rowYs[i + 1];
+            const gap = next - current;
+
+            // If gap is approx 2x pitch (or more), we missed a row
+            if (gap > usedPitch * 1.5) {
+                const missingCount = Math.round(gap / usedPitch) - 1;
+                for (let k = 1; k <= missingCount; k++) {
+                    interpolatedYs.push(current + (usedPitch * k));
+                }
+            }
+            interpolatedYs.push(next);
+        }
+        rowYs = interpolatedYs;
+    }
+
+    // B) Tail Padding (Fix missing bottom rows)
+    if (rowYs.length > 0 && rowYs.length < expectedItems) {
+        const lastY = rowYs[rowYs.length - 1];
+        const missing = expectedItems - rowYs.length;
+        for (let k = 1; k <= missing; k++) {
+            rowYs.push(lastY + usedPitch * k);
+        }
+    } else if (rowYs.length === 0) {
+        // Absolute fallback if NO anchors found
+        // Use STANDARD pitch from MinY
+        let y = calibration.minY + 20; // Guess
+        for (let k = 0; k < expectedItems; k++) {
+            answers.push(''); // Fail safe
+        }
+        // Cleanup
+        gray.delete(); blurred.delete(); binary.delete(); closed.delete(); kernel.delete(); cnts.delete(); hierarchy.delete();
+        return { answers, bubbles: [] };
+    }
+
+    // Dynamic Bubble Radius (2.6mm radius -> 5.2mm dia)
+    // Radius in px = 2.6 * scale.
+    // Add 20% margin for error? No, let's keep it tight to avoid overlap.
+    const BUBBLE_RADIUS_MM = 2.6;
+    const BUBBLE_RADIUS = Math.floor(BUBBLE_RADIUS_MM * dynamicPxPerMm * 0.9); // 0.9 safety factor
+
+    // For Camera, the fill ratio is often lower due to gray blending.
+    const ABSOLUTE_MIN = 0.20; // Lowered from 0.25 (Base Heuristic)
+    const FILL_THRESHOLD_REL = 0.15; // Lowered from 0.20
+
+    const map = ['A', 'B', 'C', 'D'];
+
+    // --- PHASE 5A: COLLECT BUBBLES ---
+    // We collect ALL bubbles first to batch-process them with AI (faster)
+    interface BubbleCandidate {
+        r: number; // Row Index (relative)
+        slotIdx: number; // 0-3 (A-D)
+        mat: any; // CV Mat
+        bubbleIndex: number; // Index in debugBubbles array
+        fill: number; // Pixel fill (keep for debug/fallback)
+    }
+    const candidates: BubbleCandidate[] = [];
+
+    for (let r = 0; r < expectedItems; r++) {
+        if (r >= rowYs.length) {
+            answers.push('');
+            continue;
+        }
+
+        const rowY = rowYs[r];
+
+        slotCenters.forEach((cx, slotIdx) => {
+            const x = Math.max(0, cx - BUBBLE_RADIUS + scanOffset.x);
+            const y = Math.max(0, rowY - BUBBLE_RADIUS + scanOffset.y);
+            const w = BUBBLE_RADIUS * 2;
+            const h = BUBBLE_RADIUS * 2;
+
+            let fill = 0;
+            let bubbleMat = null;
+
+            if (x + w < closed.cols && y + h < closed.rows) {
+                // 1. Calculate Fill (Just for debug/logging)
+                const roi = closed.roi(new cv.Rect(x, y, w, h));
+                fill = cv.countNonZero(roi) / (w * h);
+                roi.delete();
+
+                // 2. Crop Image for AI (From Grayscale Source)
+                if (x + w < colMat.cols && y + h < colMat.rows) {
+                    bubbleMat = colMat.roi(new cv.Rect(x, y, w, h));
+                }
+            }
+
+            // Create Debug Info (Initial state: Unmarked)
+            const bubbleIndex = debugBubbles.length;
+            debugBubbles.push({
+                x: x + globalOffset.x,
+                y: y + globalOffset.y,
+                w: w,
+                h: h,
+                fill: fill,
+                label: map[slotIdx],
+                itemIndex: startItemIndex + r,
+                isMarked: false,
+                colOffset: globalOffset
+            });
+
+            if (bubbleMat) {
+                candidates.push({ r, slotIdx, mat: bubbleMat, bubbleIndex, fill });
+            }
+        });
+
+        // Push placeholder for answer (will update later)
+        answers.push('');
+    }
+
+    // --- PHASE 5B: BATCH AI PREDICTION ---
+    // Run AI on all candidates in parallel
+    console.time("AI_Batch");
+
+    // Helper to process one candidate
+    const processCandidate = async (c: BubbleCandidate) => {
+        try {
+            // OpenCV -> Canvas
+            const canvas = document.createElement('canvas');
+            canvas.width = c.mat.cols;
+            canvas.height = c.mat.rows;
+            cv.imshow(canvas, c.mat);
+            c.mat.delete(); // Cleanup Mat immediately
+
+            // Predict
+            const aiResult = await predictBubble(canvas);
+
+            const label = aiResult.className.toLowerCase();
+            const prob = aiResult.probability;
+            // Treat "marked" or "filled" as Marked
+            const isAiMarked = (label.includes('marked') || label.includes('filled')) && !label.includes('un');
+
+            // Log for debug
+            console.log(`[AI] R${c.r}:${map[c.slotIdx]} ${label} (${(prob * 100).toFixed(0)}%) Fill=${c.fill.toFixed(2)}`);
+
+            // SAFETY NET: If fill is substantial (>45%) and AI is just being skeptical, trust the Pixel Count.
+            // Raised from 0.30 -> 0.45 to ignore "little darken" / shadows.
+            const overrideMarked = c.fill > 0.45;
+
+            // Raised AI Confidence from 0.45 -> 0.60
+            const finalMark = (isAiMarked && prob > 0.60) || overrideMarked;
+
+            return {
+                ...c,
+                isMarked: finalMark,
+                prob
+            };
+        } catch (err) {
+            console.error("AI Error", err);
+            return { ...c, isMarked: false, prob: 0 };
+        }
+    };
+
+    const results = await Promise.all(candidates.map(processCandidate));
+    console.timeEnd("AI_Batch");
+
+    // --- PHASE 5C: DETERMINE ANSWERS ---
+    // Group results by Row
+    const rows = new Map<number, typeof results>();
+    results.forEach(res => {
+        if (!rows.has(res.r)) rows.set(res.r, []);
+        rows.get(res.r)?.push(res);
+    });
+
+    // Decide "Winner" for each row
+    rows.forEach((rowBubbles, r) => {
+        // Filter to only those marked by AI
+        const marked = rowBubbles.filter(b => b.isMarked);
+
+        // Update Debug Bubbles Status
+        rowBubbles.forEach(b => {
+            debugBubbles[b.bubbleIndex].isMarked = b.isMarked;
+        });
+
+        if (marked.length === 1) {
+            // Single Mark - Perfect
+            answers[r] = map[marked[0].slotIdx];
+        } else if (marked.length > 1) {
+            // Multiple Marks - Pick highest confidence
+            const winner = marked.reduce((prev, curr) => curr.prob > prev.prob ? curr : prev);
+            answers[r] = map[winner.slotIdx];
+        } else {
+            // No Marks
+            answers[r] = '';
+        }
+    });
+
+    // 5. Clean up
+    gray.delete(); blurred.delete(); binary.delete(); closed.delete();
+    cnts.delete(); hierarchy.delete();
+
+    // WARPED IMAGE CAPTURE (For Debugging)
+    let warpedDataUrl = '';
+    // HACK: Use global document if available (we are in React)
+    if (typeof document !== 'undefined') {
+        const c = document.createElement('canvas');
+        cv.imshow(c, colMat); // Draws colMat to canvas
+        warpedDataUrl = c.toDataURL('image/png');
+    }
+
+    return {
+        answers,
+        bubbles: debugBubbles,
+        anchors: validAnchors.map(a => ({ x: a.cx + globalOffset.x, y: a.cy + globalOffset.y, r: Math.sqrt(a.area / Math.PI) })), // Export Anchors (Global Coords)
+        warpedImage: warpedDataUrl
+    };
 };
 
-// Main Grading Function
-export const gradeAnswerSheet = async (
+
+// --- EXPORTS ---
+
+export interface CornerPoints {
+    tl: { x: number, y: number };
+    tr: { x: number, y: number };
+    br: { x: number, y: number };
+    bl: { x: number, y: number };
+}
+
+// 1. DETECT CORNERS (Step 1 of Interactive Crop)
+export const detectPageCorners = async (
     imageSource: HTMLImageElement | HTMLCanvasElement | string,
-    totalItems: number
-): Promise<{ answers: string[], confidence: number }> => {
+    sourceType: OMRSourceType = 'upload'
+): Promise<CornerPoints> => {
     await loadOpenCV();
     const cv = window.cv;
 
+    // Use Specialized Engine
+    const { processedImage: src, originalWidth } = await getProcessedImage(imageSource, sourceType);
+
+    // Calculate Scale Factor (Processed / Original)
+    // We need this to map found corners (in processed space) back to original space for the UI
+    const scale = src.cols / originalWidth;
+
+    const imgWidth = src.cols;
+    const imgHeight = src.rows;
+
+    const blurred = new cv.Mat();
+    cv.GaussianBlur(src, blurred, new cv.Size(5, 5), 0);
+    const binThresh = new cv.Mat();
+    cv.Canny(blurred, binThresh, 50, 150);
+    const dilateKernel = cv.Mat.ones(3, 3, cv.CV_8U);
+    cv.dilate(binThresh, binThresh, dilateKernel, new cv.Point(-1, -1), 1);
+
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    // Use RETR_TREE to capture nesting (Parent/Child relationships)
+    cv.findContours(binThresh, contours, hierarchy, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE);
+
+    // Finding Markers
+    const markers: any[] = [];
+    const fiducials: any[] = [];
+
+    for (let i = 0; i < contours.size(); i++) {
+        const cnt = contours.get(i);
+        const area = cv.contourArea(cnt);
+        const rect = cv.boundingRect(cnt);
+        const aspectRatio = rect.width / rect.height;
+
+        // Generic Square Marker Candidate
+        if (area > 50 && area < 50000 && aspectRatio >= 0.5 && aspectRatio <= 2.0) {
+            markers.push({ cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, area });
+
+            // --- FIDUCIAL CHECK (Advanced) ---
+            // Check for Nested Square Pattern (Black -> White -> Black)
+            // Hierarchy: [Next, Previous, First_Child, Parent]
+            // We want a Contour (Outer Black) that has a Child (Middle White) that has a Child (Inner Black)
+            // Hierarchy is 1 x N matrix. Access via (0, index).
+            const data = hierarchy.intPtr(0, i);
+            const childIdx = data[2]; // First_Child is at index 2
+
+            if (childIdx !== -1) {
+                const childData = hierarchy.intPtr(0, childIdx);
+                const grandChildIdx = childData[2];
+
+                if (grandChildIdx !== -1) {
+                    // Found 3 layers of nesting! High confidence fiducial.
+                    fiducials.push({ cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, area });
+                }
+            }
+        }
+    }
+
+    // Cleanup local Mats
+    blurred.delete(); binThresh.delete(); dilateKernel.delete(); contours.delete(); hierarchy.delete();
+    // Delete source from engine
+    src.delete();
+
+    let corners: CornerPoints | null = null;
+
+    // Strategy 0: Concentric Fiducials (Gold Standard)
+    if (fiducials.length >= 4) {
+        // Sort finding the 4 most extreme corners
+        // Same logic as markers but using the high-confidence fiducials list
+
+        // Basic Extreme Sort
+        const tl = fiducials.reduce((prev, curr) => (curr.cx + curr.cy) < (prev.cx + prev.cy) ? curr : prev);
+        const br = fiducials.reduce((prev, curr) => (curr.cx + curr.cy) > (prev.cx + prev.cy) ? curr : prev);
+        const tr = fiducials.reduce((prev, curr) => (curr.cx - curr.cy) > (prev.cx - prev.cy) ? curr : prev);
+        const bl = fiducials.reduce((prev, curr) => (curr.cx - curr.cy) < (prev.cx - prev.cy) ? curr : prev);
+
+        corners = {
+            tl: { x: tl.cx, y: tl.cy },
+            tr: { x: tr.cx, y: tr.cy },
+            br: { x: br.cx, y: br.cy },
+            bl: { x: bl.cx, y: bl.cy }
+        };
+    }
+
+    if (!corners && markers.length >= 4) {
+        // Fallback to generic squares
+        const tl = markers.reduce((prev, curr) => (curr.cx + curr.cy) < (prev.cx + prev.cy) ? curr : prev);
+        const br = markers.reduce((prev, curr) => (curr.cx + curr.cy) > (prev.cx + prev.cy) ? curr : prev);
+        const tr = markers.reduce((prev, curr) => (curr.cx - curr.cy) > (prev.cx - prev.cy) ? curr : prev);
+        const bl = markers.reduce((prev, curr) => (curr.cx - curr.cy) < (prev.cx - curr.cy) ? curr : prev);
+
+        corners = {
+            tl: { x: tl.cx, y: tl.cy },
+            tr: { x: tr.cx, y: tr.cy },
+            br: { x: br.cx, y: br.cy },
+            bl: { x: bl.cx, y: bl.cy }
+        };
+    }
+
+    if (!corners) {
+        // Default
+        corners = {
+            tl: { x: 0, y: 0 },
+            tr: { x: imgWidth, y: 0 },
+            br: { x: imgWidth, y: imgHeight },
+            bl: { x: 0, y: imgHeight }
+        };
+    }
+
+    // --- RESCALE CORNERS TO ORIGINAL SPACE ---
+    if (scale !== 1 && scale > 0) {
+        corners.tl.x /= scale; corners.tl.y /= scale;
+        corners.tr.x /= scale; corners.tr.y /= scale;
+        corners.br.x /= scale; corners.br.y /= scale;
+        corners.bl.x /= scale; corners.bl.y /= scale;
+    }
+
+    return corners;
+};
+
+// Helper for sorting points to TL, TR, BR, BL
+const sortPointsSpatial = (points: any[], w: number, h: number): CornerPoints => {
+    // Basic Extreme Sort
+    // We assume points are roughly in corners.
+    const tl = points.reduce((prev, curr) => (curr.cx + curr.cy) < (prev.cx + prev.cy) ? curr : prev);
+    const br = points.reduce((prev, curr) => (curr.cx + curr.cy) > (prev.cx + prev.cy) ? curr : prev);
+    const tr = points.reduce((prev, curr) => (curr.cx - curr.cy) > (prev.cx - prev.cy) ? curr : prev);
+    const bl = points.reduce((prev, curr) => (curr.cx - curr.cy) < (prev.cx - prev.cy) ? curr : prev);
+
+    return {
+        tl: { x: tl.cx, y: tl.cy },
+        tr: { x: tr.cx, y: tr.cy },
+        br: { x: br.cx, y: br.cy },
+        bl: { x: bl.cx, y: bl.cy }
+    };
+};
+
+// 2. GRADE FROM CORNERS (Step 2 of Interactive Crop)
+export const gradeFromCorners = async (
+    imageSource: HTMLImageElement | HTMLCanvasElement | string,
+    corners: CornerPoints,
+    itemCount: number, // Changed from totalItems
+    sourceType: OMRSourceType = 'upload',
+    manualOffset: { x: number, y: number } = { x: 0, y: 0 } // NEW: Manual Nudge
+): Promise<{ answers: string[], confidence: number, debugData?: { bubbles: DebugBubble[], warpedImage: string } }> => {
+    await loadOpenCV();
+    const cv = window.cv;
+
+    // Use Specialized Engine
+    const { processedImage: src, originalWidth } = await getProcessedImage(imageSource, sourceType);
+
+    // Note: corners passed in are in ORIGINAL coordinates (scaled).
+    // But 'src' is PROCESSED (scaled down).
+    // We need to SCALE DOWN the corners to match 'src'.
+    const scale = src.cols / originalWidth;
+
+    // Create SCALED corners for warping
+    const scaledCorners = {
+        tl: { x: corners.tl.x * scale, y: corners.tl.y * scale },
+        tr: { x: corners.tr.x * scale, y: corners.tr.y * scale },
+        br: { x: corners.br.x * scale, y: corners.br.y * scale },
+        bl: { x: corners.bl.x * scale, y: corners.bl.y * scale },
+    };
+
+    // Warp
+    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+        scaledCorners.tl.x, scaledCorners.tl.y, scaledCorners.tr.x, scaledCorners.tr.y,
+        scaledCorners.br.x, scaledCorners.br.y, scaledCorners.bl.x, scaledCorners.bl.y
+    ]);
+    const widthTop = Math.hypot(scaledCorners.tr.x - scaledCorners.tl.x, scaledCorners.tr.y - scaledCorners.tl.y);
+    const widthBot = Math.hypot(scaledCorners.br.x - scaledCorners.bl.x, scaledCorners.br.y - scaledCorners.bl.y);
+    const heightLeft = Math.hypot(scaledCorners.bl.x - scaledCorners.tl.x, scaledCorners.bl.y - scaledCorners.tl.y);
+    const heightRight = Math.hypot(scaledCorners.br.x - scaledCorners.tr.x, scaledCorners.br.y - scaledCorners.tr.y);
+
+    const maxWidth = Math.max(widthTop, widthBot);
+    const maxHeight = Math.max(heightLeft, heightRight);
+
+    const targetWidth = 1000;
+    const aspectRatio = maxHeight / maxWidth;
+    const targetHeight = Math.round(targetWidth * aspectRatio);
+
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, targetWidth, 0, targetWidth, targetHeight, 0, targetHeight]);
+    const M = cv.getPerspectiveTransform(srcTri, dstTri);
+
+    const warped = new cv.Mat();
+    // src is grayscale
+    cv.warpPerspective(src, warped, M, new cv.Size(targetWidth, targetHeight));
+
+    // Capture Warped Image for Debugging (Base64)
+    // Only capture if needed (performance cost) but for dataset gen we need it.
+    // The previous implementation deleted warped immediately. We will keep it until return.
+    const canvas = document.createElement('canvas'); // headless
+    cv.imshow(canvas, warped);
+    const warpedDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+
+    src.delete(); srcTri.delete(); dstTri.delete(); M.delete();
+
     try {
-        // 1. Load Image
-        let src: any;
-        if (typeof imageSource === 'string') {
-            // Base64 or URL - Need to load into Image element first
-            // For now assume it's passed as an ID or we create an element
-            return { answers: [], confidence: 0 }; // simplified
+        let allAnswers: string[] = [];
+        let allBubbles: DebugBubble[] = [];
+
+        // --- ROUTING LOGIC ---
+        // --- ROUTING LOGIC ---
+        if (itemCount > 20 && itemCount <= 50) {
+            // 2 COLUMNS (Handles 30, 40, 50 items)
+            // Split evenly or near-evenly
+            const colWidth = Math.floor(warped.cols / 2);
+            const itemsLeft = Math.ceil(itemCount / 2); // e.g., 25 for 50, 20 for 40
+            const itemsRight = itemCount - itemsLeft;   // e.g., 25 for 50, 20 for 40
+
+            // Col 1
+            const c1Mat = warped.roi(new cv.Rect(0, 0, colWidth, warped.rows));
+            const c1 = await processSingleColumnImage(cv, c1Mat, itemsLeft, { minY: 100, maxY: warped.rows - 50 }, "Left", 0, { x: 0, y: 0 }, manualOffset);
+            c1Mat.delete();
+
+            // Col 2
+            // OVERLAP STRATEGY: Start slightly before the middle to ensure anchors aren't cut
+            const overlap = 50;
+            const startX2 = colWidth - overlap;
+            const c2Mat = warped.roi(new cv.Rect(startX2, 0, warped.cols - startX2, warped.rows));
+            // Offset logic: x starts at startX2
+            const c2 = await processSingleColumnImage(cv, c2Mat, itemsRight, { minY: 100, maxY: warped.rows - 50 }, "Right", itemsLeft, { x: startX2, y: 0 }, manualOffset);
+            c2Mat.delete();
+
+            allAnswers = [...c1.answers, ...c2.answers].slice(0, itemCount);
+            allBubbles = [...c1.bubbles, ...c2.bubbles];
+
+            // Flatten Anchors
+            const allAnchors = [...(c1.anchors || []), ...(c2.anchors || [])];
+
+            return { answers: allAnswers, confidence: 1.0, debugData: { bubbles: allBubbles, anchors: allAnchors, warpedImage: warpedDataUrl } as any };
+
+        } else if (itemCount > 50) {
+            // 3 COLUMNS (Assume 20 + 20 + Remainder)
+            const colWidth = Math.floor(warped.cols / 3);
+
+            // Col 1
+            const c1Mat = warped.roi(new cv.Rect(0, 0, colWidth, warped.rows));
+            const c1 = await processSingleColumnImage(cv, c1Mat, 20, { minY: 100, maxY: warped.rows - 50 }, "Col1", 0, { x: 0, y: 0 }, manualOffset);
+            c1Mat.delete();
+
+            // Col 2 (Overlap Left)
+            const overlap = 40;
+            const startX2 = colWidth - overlap;
+            const c2Mat = warped.roi(new cv.Rect(startX2, 0, colWidth + overlap, warped.rows));
+            const c2 = await processSingleColumnImage(cv, c2Mat, 20, { minY: 100, maxY: warped.rows - 50 }, "Col2", 20, { x: startX2, y: 0 }, manualOffset);
+            c2Mat.delete();
+
+            // Col 3 (Overlap Left)
+            const startX3 = (colWidth * 2) - overlap;
+            const c3Mat = warped.roi(new cv.Rect(startX3, 0, warped.cols - startX3, warped.rows));
+            const remainder = itemCount - 40;
+            const c3 = await processSingleColumnImage(cv, c3Mat, remainder, { minY: 100, maxY: warped.rows - 50 }, "Col3", 40, { x: startX3, y: 0 }, manualOffset);
+            c3Mat.delete();
+
+            allAnswers = [...c1.answers, ...c2.answers, ...c3.answers].slice(0, itemCount);
+            allBubbles = [...c1.bubbles, ...c2.bubbles, ...c3.bubbles];
+            const allAnchors = [...(c1.anchors || []), ...(c2.anchors || []), ...(c3.anchors || [])];
+
+            return { answers: allAnswers, confidence: 1.0, debugData: { bubbles: allBubbles, anchors: allAnchors, warpedImage: warpedDataUrl } as any };
+
         } else {
-            src = cv.imread(imageSource);
+            // SINGLE COLUMN
+            const res = await processSingleColumnImage(cv, warped, itemCount, { minY: 100, maxY: warped.rows - 50 }, "Single", 1, { x: 0, y: 0 }, manualOffset);
+            allAnswers = res.answers.slice(0, itemCount);
+            allBubbles = res.bubbles;
+            return { answers: allAnswers, confidence: 1.0, debugData: { bubbles: allBubbles, anchors: res.anchors, warpedImage: warpedDataUrl } as any };
         }
-
-        // 2. Preprocessing
-        const gray = new cv.Mat();
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-        const blurred = new cv.Mat();
-        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-
-        const edged = new cv.Mat();
-        cv.Canny(blurred, edged, 75, 200);
-
-        // 3. Find Document (Corner Markers Strategy)
-        // Instead of finding 1 big paper, we look for 4 corner markers (black squares).
-        // This avoids locking onto the 'Name' box.
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-
-        // Use standard binary threshold for marker finding, or keep Canny?
-        // Canny gives edges. Markers are solid blocks.
-        // Better to use simple Thresholding for markers.
-        const binThresh = new cv.Mat();
-        cv.threshold(blurred, binThresh, 0, 255, cv.CV_THRESH_BINARY_INV + cv.CV_THRESH_OTSU);
-
-        cv.findContours(binThresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        const markers: any[] = [];
-        // Loop contours to find candidate markers
-        for (let i = 0; i < contours.size(); i++) {
-            const cnt = contours.get(i);
-            const area = cv.contourArea(cnt);
-            const rect = cv.boundingRect(cnt);
-            const aspectRatio = rect.width / rect.height;
-            const solidity = area / (rect.width * rect.height);
-
-            // Marker Characteristics:
-            // 1. Reasonable size (not too small noise, not huge name box)
-            // Name Box Area is huge compared to markers. Markers are small squares.
-            // Let's say Marker Area > 100 && Area < 5000 (depends on res).
-            // But relative to image area is better? 
-            // Marker is ~20px - 50px. Area ~400-2500.
-            // 2. Square-ish (AR 0.8 - 1.2)
-            // 3. Solid (Solidity ~1.0)
-
-            if (area > 50 && area < 10000 && aspectRatio >= 0.7 && aspectRatio <= 1.3 && solidity > 0.8) {
-                markers.push(cnt);
-            }
-        }
-
-        let docCnt = null;
-
-        if (markers.length >= 4) {
-            // Sort markers by area? Or just use them?
-            // If we have > 4 (e.g. noise), we need to pick the "best" 4.
-            // Usually the 4 corners are the most extreme points?
-            // Or the 4 largest squares?
-            // Let's sort by area descending and take top 4.
-            markers.sort((a, b) => cv.contourArea(b) - cv.contourArea(a));
-            const distinctMarkers = markers.slice(0, 4);
-
-            // Now we have 4 markers. We need to order them TL, TR, BL, BR.
-            // Or rather, we need to construct a single "docCnt" from their CENTERS.
-            // This forms the bounding box we want to warp.
-
-            // Calculate centers
-            const points = distinctMarkers.map(c => {
-                const M = cv.moments(c);
-                return { x: M.m10 / M.m00, y: M.m01 / M.m00 };
-            });
-
-            // Order points: TL, TR, BR, BL via our helper logic (or manually).
-            // Sort by Y (Top vs Bottom)
-            points.sort((a, b) => a.y - b.y);
-
-            const top = points.slice(0, 2).sort((a: any, b: any) => a.x - b.x);
-            const bottom = points.slice(2, 4).sort((a: any, b: any) => a.x - b.x);
-
-            // Create a synthetic contour from these 4 points
-            docCnt = new cv.Mat(4, 1, cv.CV_32SC2);
-            docCnt.intPtr(0, 0)[0] = top[0].x; docCnt.intPtr(0, 0)[1] = top[0].y; // TL
-            docCnt.intPtr(1, 0)[0] = top[1].x; docCnt.intPtr(1, 0)[1] = top[1].y; // TR
-            docCnt.intPtr(2, 0)[0] = bottom[1].x; docCnt.intPtr(2, 0)[1] = bottom[1].y; // BR
-            docCnt.intPtr(3, 0)[0] = bottom[0].x; docCnt.intPtr(3, 0)[1] = bottom[0].y; // BL
-
-            // Important: Clean up others
-            binThresh.delete();
-        } else {
-            // FALLBACK: Largest Contour Strategy (but smarter)
-            console.warn(`Found only ${markers.length} markers. Falling back to Paper Contour detection...`);
-
-            let maxPolyArea = 0;
-            let bestApproximation = null;
-
-            for (let i = 0; i < contours.size(); i++) {
-                const cnt = contours.get(i);
-                const area = cv.contourArea(cnt);
-                const rect = cv.boundingRect(cnt);
-
-                // Relaxed constraints for paper
-                if (area > 5000 && rect.width > 200 && rect.height > 200) {
-                    const peri = cv.arcLength(cnt, true);
-                    const approx = new cv.Mat();
-                    cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-
-                    if (approx.rows === 4) {
-                        const ar = rect.width / rect.height;
-
-                        // Exclude Name Box (AR > 2.5), Exclude thin strips (AR > 3 or < 0.3)
-                        // Paper AR is usually 0.7 - 1.5. 
-                        // Allow little more for perspective.
-                        if (ar < 2.5 && ar > 0.4 && area > maxPolyArea) {
-                            maxPolyArea = area;
-                            if (bestApproximation) bestApproximation.delete();
-                            bestApproximation = approx;
-                        } else {
-                            approx.delete();
-                        }
-                    } else {
-                        approx.delete();
-                    }
-                }
-            }
-
-            if (bestApproximation) {
-                docCnt = bestApproximation;
-                console.log("Fallback successful: Found Paper Contour.");
-                // binThresh.delete(); // don't delete yet? it's not used below except for delete
-            } else {
-                console.error("Fallback failed. No paper contour found.");
-                binThresh.delete();
-                src.delete(); gray.delete(); blurred.delete(); edged.delete(); contours.delete(); hierarchy.delete();
-                throw new Error(`Analysis Failed. Found ${markers.length} markers. Could not find 4 Corner Markers AND could not find the Paper Outline. Please ensure proper lighting and background contrast.`);
-            }
-            binThresh.delete();
-        }
-
-        // 4. Warp
-        // Need to reshape docCnt to 4x2 points (float)
-        // docCnt is a Mat of points (int)
-        // We need to convert it to a format for our helper
-        const floatPts = new cv.Mat();
-        docCnt.convertTo(floatPts, cv.CV_32F);
-
-        const warped = fourPointTransform(gray, floatPts);
-        const warpedColor = fourPointTransform(src, floatPts); // For debug view if needed
-
-        // 5. Threshold (Otsu)
-        const thresh = new cv.Mat();
-        cv.threshold(warped, thresh, 0, 255, cv.CV_THRESH_BINARY_INV + cv.CV_THRESH_OTSU);
-
-        // 6. Find Bubbles
-        // We look for contours in the warped image that are roughly circular and of a certain size
-        // This requires some calibration.
-        // Assuming 50 items = 2 cols? Or 1 col?
-        // User's script assumes 1 column of questions, but our PDF generates Multi-Column.
-        // This is the TRICKY part.
-        // Strategy: Grid Chop.
-        // If we know the layout (Grid), we can just slice the image?
-        // Or detect ALL bubbles and sort them.
-
-        const bubbleCnts = new cv.MatVector();
-        const hierBubbles = new cv.Mat();
-        cv.findContours(thresh, bubbleCnts, hierBubbles, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        const questionCnts: any[] = [];
-        for (let i = 0; i < bubbleCnts.size(); i++) {
-            const c = bubbleCnts.get(i);
-            const rect = cv.boundingRect(c);
-            const ar = rect.width / rect.height;
-
-            // Filter Bubbles
-            // Relaxed constraints to better detect bubbles in various resolutions
-            const area = cv.contourArea(c);
-            if (area > 50 && rect.width >= 5 && rect.height >= 5 && ar >= 0.4 && ar <= 1.6) {
-                questionCnts.push(c);
-            }
-        }
-
-        // Multi-Column Sorting Strategy
-        // 1. Sort all bubbles by X coordinate first to separate columns
-        const sortedByX = sortContours(questionCnts, "left-to-right");
-
-        // 2. Group into Columns based on X gaps
-        const columns: any[][] = [];
-        let currentCol: any[] = [];
-        let lastX = -999;
-
-        // Dynamic Gap Detection: If next bubble is significantly to the right, it's a new column
-        // A standard bubble is ~20px-30px wide + gap. If jump is >> width, say 50px.
-        const COLUMN_GAP_THRESHOLD = 50;
-
-        sortedByX.forEach(cnt => {
-            const rect = cv.boundingRect(cnt);
-            if (lastX !== -999 && (rect.x - lastX) > COLUMN_GAP_THRESHOLD && currentCol.length > 0) {
-                // But wait, sorting by X implies strictly increasing X.
-                // Bubbles in the SAME column are roughly same X (within bubble width).
-                // Bubbles in NEXT column are X + block_width.
-                // We need to check if the current bubble's X is significantly larger than the *average* X of the current column?
-                // Simpler: If rect.x > lastX + 50? 
-                // No, bubbles in same column have ~same X. 
-                // Bubbles in different column have distinct X.
-            }
-            // Actually, simple sorting by X mixes rows: C1-R1, C1-R2... NO.
-            // Sorting by X puts C1-R1, C1-R2... mixed? No.
-            // C1-R1-A, C1-R1-B... have increasing X.
-            // C1-R2-A ... have same X range.
-            // C2-R1-A ... have much larger X.
-
-            // Better Strategy: K-Means clustering on X? Overkill.
-            // Histogram of X? 
-            // Simple clustering:
-            // Iterate all, if x is within +/- 30px of current column center, add to column.
-            // Else create new column.
-        });
-
-        // Let's redo:
-        // 1. Identify valid columns by X-centers.
-        // We know layout is grid.
-        // We take all X-centers. Cluster them.
-        const xCenters = questionCnts.map(c => {
-            const r = cv.boundingRect(c);
-            return r.x + r.width / 2;
-        });
-
-        // Find unique column blocks.
-        // A "Block" of questions (Col 1, Col 2...) is separated by large gap.
-        // Within a block, we have rows of bubbles (A,B,C,D).
-        // Each bubble in a row is separated by small gap.
-
-        // We want to process Column 1 fully, then Column 2.
-        // So we need to group contours that belong to Col 1.
-        // Col 1 is defined by a range of X values.
-
-        // Sort all contours by X.
-        // We can split the image vertically?
-        // Let's assume max 5 columns.
-        // We need to detect "Grand Columns" (Question Blocks).
-
-        // Heuristic:
-        // Sort by X.
-        // Iterate through. If x_current - x_prev > LARGE_GAP (e.g. 100px), it's a new Question Column.
-        // But wait, the bubbles A, B, C, D are spaced by X.
-        // So A->B is small gap. B->C small gap.
-        // D -> Col2_A is a LARGE gap?
-        // Yes, usually.
-        // PDF Gen: Block Width = 12 + 4*9 = 48mm. Gap = 10mm.
-        // Gap is smaller than block? 
-        // 10mm gap vs 9mm bubble spacing. It helps.
-
-        // Let's try:
-        // Group bubbles into "Visual Columns" (A, B, C, D).
-        // Then Group Visual Columns into "Question Columns".
-
-        // Alternative:
-        // Just Sort by Y (Top-Bottom).
-        // Then for each ROW (similar Y), sort by X.
-        // Row = [Q1_A, Q1_B... Q1_D,  Q21_A... Q21_D]
-        // If row legth is 4 => Only 1 col.
-        // If row length is 8 => 2 cols.
-        // If row length is 12 => 3 cols.
-        // We can just chunk the sorted row by 4!
-        // [Q1-bubbles] -> Process -> Ans1
-        // [Q21-bubbles] -> Process -> Ans21
-        // But then we simply append Ans21 AFTER Ans1.
-        // The array becomes [Ans1, Ans21, Ans41, Ans2, Ans22...]
-        // We need to REORDER the final array?
-
-        // YES. If we detect multiple columns per row, we generate an interleaved array.
-        // We need to de-interleave it.
-        // But we don't know the column split counts (20, 20, 10).
-        // UNLESS we calculate it.
-
-        // Let's stick to "Split Contours by Main Columns first".
-        // 1. Determine X-thresholds for columns.
-        // Sort contours by X.
-        // Histogram approach?
-
-        // Implementation:
-        // 1. Sort by X.
-        // 2. Find large jumps in X (between the 'D' of Col 1 and 'A' of Col 2).
-        // But 'A' and 'B' are also separated.
-        // Dist(A,B) ~ width. Dist(D, Col2-A) > width.
-
-        const sortedX = sortContours(questionCnts, "left-to-right");
-        const vertical_clusters: any[][] = [];
-
-        if (sortedX.length > 0) {
-            let currentCluster = [sortedX[0]];
-            let lastR = cv.boundingRect(sortedX[0]);
-
-            for (let i = 1; i < sortedX.length; i++) {
-                const c = sortedX[i];
-                const r = cv.boundingRect(c);
-                const prev = currentCluster[currentCluster.length - 1];
-                const pr = cv.boundingRect(prev);
-
-                // Distance from Prev-Right-Edge to Curr-Left-Edge
-                const gap = r.x - (pr.x + pr.width);
-
-                // If gap is BIG (e.g. > 2 * bubble_width), start new vertical cluster (Question Column)
-                // A->B gap is small. D->Col2A is bigger.
-                // Or compare centers.
-                // Let's use a threshold relative to bubble width.
-                // Bubble width ~20px. Gap A-B ~10px. Gap Col-Col ~50px?
-
-                if (gap > (pr.width * 1.5)) {
-                    // Likely a new column block? 
-                    // Wait, A-B gap might be small.
-                    // But if we are sorting by X, we might mix rows?
-                    // C1-R1-A, C1-R2-A....
-                    // No, left-to-right sort mixes rows.
-                    // This is hard.
-                }
-            }
-        }
-
-        // BACK TO ROBUST APPROACH:
-        // 1. Group into ROWS by Y.
-        // 2. Within each ROW, Sort by X.
-        // 3. Chunk each ROW into groups of 4.
-        // 4. Assign each chunk to a "Question ID".
-        //    How do we know Q1 vs Q21?
-        //    We maintain `col_counters`.
-        //    Row 1 has 3 chunks? => Col 1, Col 2, Col 3.
-        //    We store answers in a Map: `Col1_Answers`, `Col2_Answers`...
-        //    Then we concatenate them at the end.
-
-        const answersMap: { [key: number]: string[] } = {}; // ColIndex -> Answers
-
-        // 1. Sort ALL by Top-to-Bottom
-        const sortedY = sortContours(questionCnts, "top-to-bottom");
-
-        // 2. Group into Rows
-        const rows: any[][] = [];
-        const ROW_TOLERANCE = 24;
-
-        // Modified Row Grouping with intelligent averaging
-        // (existing logic was okay, just reusing it)
-        let currentRowNodes: any[] = [];
-        let rowY = -999;
-
-        // We need to re-sort carefully or handle the loop
-        // The previous loop was okay.
-
-        sortedY.forEach(cnt => {
-            const rect = cv.boundingRect(cnt);
-            const cy = rect.y + rect.height / 2;
-
-            if (rowY === -999) rowY = cy;
-
-            if (Math.abs(cy - rowY) > ROW_TOLERANCE) {
-                rows.push(currentRowNodes);
-                currentRowNodes = [];
-                rowY = cy;
-            }
-            currentRowNodes.push(cnt);
-            // Update average Y? No, keep simple.
-        });
-        if (currentRowNodes.length) rows.push(currentRowNodes);
-
-        // 3. Process Rows
-        rows.forEach(row => {
-            // Sort by X
-            row.sort((a, b) => cv.boundingRect(a).x - cv.boundingRect(b).x);
-
-            // Chunk into 4s
-            // Each chunk is a question from a specific column 0, 1, 2...
-            let colIndex = 0;
-
-            for (let i = 0; i < row.length; i += 4) {
-                const chunk = row.slice(i, i + 4);
-                if (chunk.length < 4) continue;
-
-                // Process Answer (A,B,C,D)
-                let maxPixel = -1;
-                let bestIdx = -1;
-
-                chunk.forEach((c: any, idx: number) => {
-                    const mask = cv.Mat.zeros(thresh.rows, thresh.cols, cv.CV_8UC1);
-                    const contourVec = new cv.MatVector();
-                    contourVec.push_back(c);
-                    cv.drawContours(mask, contourVec, -1, [255], -1);
-                    const rect = cv.boundingRect(c);
-                    // Check filled pixels
-                    // Use mean intensity or countNonZero of mask AND thresh?
-                    // thresh is binary (255=white=background?). 
-                    // Wait, pre-processing: `cv.threshold(warped, thresh, 0, 255, cv.CV_THRESH_BINARY_INV + cv.CV_THRESH_OTSU);`
-                    // BINARY_INV => Filled Bubble (Black on Paper) becomes WHITE (255) in thresh.
-                    // So we countNonZero in the ROI of thresh.
-                    const roi = thresh.roi(rect);
-                    const count = cv.countNonZero(roi);
-
-                    // Density check?
-                    if (count > maxPixel) {
-                        maxPixel = count;
-                        bestIdx = idx;
-                    }
-                    roi.delete(); mask.delete(); contourVec.delete();
-                });
-
-                // Threshold for "Is Filled?"
-                // If maxPixel is very low (noise), maybe it's blank?
-                // For now, assume forced choice (pick max).
-                // Or add threshold: if (maxPixel < totalPixels * 0.4) default to ''?
-
-                const map = ['A', 'B', 'C', 'D'];
-                const ans = map[bestIdx];
-
-                if (!answersMap[colIndex]) answersMap[colIndex] = [];
-                answersMap[colIndex].push(ans);
-
-                colIndex++;
-            }
-        });
-
-        // 4. Flatten Answers by Column
-        // Object.keys might be unordered? Use 0, 1, 2...
-        const finalAnswers: string[] = [];
-        const numCols = Object.keys(answersMap).length;
-        for (let c = 0; c < numCols; c++) {
-            if (answersMap[c]) {
-                finalAnswers.push(...answersMap[c]);
-            }
-        }
-
-        // ... (sorting logic)
-
-        // VISUAL DEBUGGING: Draw detailed feedback on the original image
-        // We need to un-warp points to draw on original image? 
-        // Too hard. Let's just draw on the warped image and return it?
-        // Or better: We assume the input 'imageSource' canvas is where we want to verify.
-
-        // Since we have 'docCnt', we can draw the detected paper on the original image.
-        if (imageSource instanceof HTMLCanvasElement) {
-            const ctx = imageSource.getContext('2d');
-            if (ctx) {
-                // 1. Draw Paper Contour (Green)
-                // docCnt points are relative to the original image 'src'
-                // We need to extract points from docCnt
-                // docCnt is CV_32S (integer)
-
-                // Simplified drawing using JS (not OpenCV drawing to keep transparent pipeline)
-                ctx.strokeStyle = '#00FF00'; // Green
-                ctx.lineWidth = 4;
-                ctx.beginPath();
-                const ptr = docCnt.data32S;
-                ctx.moveTo(ptr[0], ptr[1]);
-                ctx.lineTo(ptr[2], ptr[3]);
-                ctx.lineTo(ptr[4], ptr[5]);
-                ctx.lineTo(ptr[6], ptr[7]);
-                ctx.closePath();
-                ctx.stroke();
-
-                // 2. We can't easily draw the bubbles because they are in 'warped' coordinate space.
-                // However, we can console log the count.
-                console.log(`Debug: Found ${questionCnts.length} potential bubbles.`);
-                console.log(`Debug: Warped size ${warped.cols}x${warped.rows}`);
-
-                // Fallback: If 0 answers, maybe thresholding failed.
-                if (finalAnswers.length === 0) {
-                    // Draw a big warning on canvas
-                    ctx.font = "30px Arial";
-                    ctx.fillStyle = "red";
-                    ctx.fillText("Paper Detected, but 0 Bubbles found.", 50, 50);
-                    ctx.fillText("Check lighting & markers.", 50, 90);
-                }
-            }
-        }
-
-        // Cleanup functions
-        src.delete(); gray.delete(); blurred.delete(); edged.delete();
-        contours.delete(); hierarchy.delete(); docCnt.delete();
-        floatPts.delete(); warped.delete(); warpedColor.delete(); thresh.delete();
-        bubbleCnts.delete(); hierBubbles.delete();
-
-        return { answers: finalAnswers, confidence: 1.0 };
-
-    } catch (e: any) {
-        console.error("OMR Error", e);
-        if (imageSource instanceof HTMLCanvasElement) {
-            const ctx = imageSource.getContext('2d');
-            if (ctx) {
-                ctx.strokeStyle = 'red';
-                ctx.lineWidth = 5;
-                ctx.strokeRect(10, 10, imageSource.width - 20, imageSource.height - 20);
-            }
-        }
-        throw e;
+    } catch (e) {
+        console.error("Grading Error:", e);
+        if (!warped.isDeleted()) warped.delete();
+        return { answers: [], confidence: 0 };
+    }
+};
+
+// 3. MAIN (Backward Compat)
+export const gradeAnswerSheet = async (
+    imageSource: HTMLImageElement | HTMLCanvasElement | string,
+    totalItems: number,
+    sourceType: OMRSourceType = 'upload',
+    manualOffset: { x: number, y: number } = { x: 0, y: 0 } // NEW
+): Promise<{ answers: string[], confidence: number, debugData?: any }> => {
+    try {
+        const corners = await detectPageCorners(imageSource, sourceType);
+        console.log("Corners Detected:", corners);
+        return await gradeFromCorners(imageSource, corners, totalItems, sourceType, manualOffset);
+    } catch (e) {
+        console.error("Auto-grade failed:", e);
+        return { answers: [], confidence: 0 };
     }
 };

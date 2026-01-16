@@ -284,34 +284,34 @@ export const ItemAnalysis = ({ user, onStartAnalysis, chatMessages, onGenerateLe
 
             <div className="max-w-7xl mx-auto space-y-6">
                 {/* Header Section */}
-                <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl p-6 rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-sm sticky top-2 z-30">
-                    <div className="flex items-center gap-4">
-                        <div className="p-3 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-2xl shadow-lg shadow-indigo-500/30 text-white">
+                <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl p-4 md:p-6 rounded-3xl border border-slate-200/50 dark:border-slate-700/50 shadow-sm sticky top-2 z-30">
+                    <div className="flex items-center gap-4 w-full md:w-auto">
+                        <div className="p-3 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-2xl shadow-lg shadow-indigo-500/30 text-white shrink-0">
                             <FileTextIcon className="w-8 h-8" />
                         </div>
                         <div>
-                            <h1 className="text-3xl font-serif font-bold text-slate-900 dark:text-white tracking-tight leading-none">
+                            <h1 className="text-2xl md:text-3xl font-serif font-bold text-slate-900 dark:text-white tracking-tight leading-none">
                                 Item Analysis
                             </h1>
                             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium mt-1">
-                                Assessment Evaluation & AI Insights Engine
+                                Assessment Evaluation & AI Insights
                             </p>
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-3">
+                    <div className="flex w-full md:w-auto items-center gap-3">
                         <button
                             onClick={() => setShowLoadModal(true)}
-                            className="group flex items-center px-6 py-3 bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 rounded-2xl font-bold text-sm transition-all shadow-sm hover:shadow-md hover:border-indigo-300 dark:hover:border-indigo-500"
+                            className="flex-1 md:flex-none group flex items-center justify-center px-6 py-3 bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 rounded-2xl font-bold text-sm transition-all shadow-sm hover:shadow-md hover:border-indigo-300 dark:hover:border-indigo-500"
                         >
                             <FolderIcon className="w-4 h-4 mr-2 text-indigo-500 group-hover:scale-110 transition-transform" />
-                            Open Portal
+                            Open
                         </button>
                         <button
                             onClick={handleSaveSession}
                             disabled={isSaving}
                             className={`
-                                relative overflow-hidden flex items-center px-6 py-3 rounded-2xl font-bold text-sm shadow-lg transition-all hover:-translate-y-0.5 disabled:opacity-70 disabled:transform-none
+                                flex-1 md:flex-none relative overflow-hidden flex items-center justify-center px-6 py-3 rounded-2xl font-bold text-sm shadow-lg transition-all hover:-translate-y-0.5 disabled:opacity-70 disabled:transform-none
                                 ${isSaving
                                     ? 'bg-indigo-400 text-white cursor-wait'
                                     : 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-indigo-500/30 hover:shadow-indigo-500/50'
@@ -329,7 +329,7 @@ export const ItemAnalysis = ({ user, onStartAnalysis, chatMessages, onGenerateLe
                             ) : (
                                 <>
                                     <SaveIcon className="w-4 h-4 mr-2" />
-                                    <span>Save Workspace</span>
+                                    <span>Save</span>
                                 </>
                             )}
                         </button>
@@ -367,7 +367,7 @@ export const ItemAnalysis = ({ user, onStartAnalysis, chatMessages, onGenerateLe
                     </div>
 
                     {/* Content Views */}
-                    <div className="p-6 md:p-8 min-h-[500px] flex-1">
+                    <div className="p-4 md:p-8 min-h-[500px] flex-1 overflow-y-auto custom-scrollbar">
                         {activeTab === 'config' && (
                             <AnalysisSetup
                                 metadata={metadata}

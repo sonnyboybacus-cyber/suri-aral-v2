@@ -3,7 +3,8 @@ import React from 'react';
 import { TestMetadata, SchoolInfo, ClassInfo, Teacher, Subject } from '../../types';
 import { QuestionBank, TOS } from '../../types/questionBank';
 import { AnalysisSetup } from './AnalysisSetup';
-import { ChevronDownIcon, SchoolIcon, LibraryIcon, FileTextIcon, UserIcon, KeyIcon, SettingsIcon, CheckCircleIcon } from '../icons';
+import { CheckCircleIcon, ChevronDownIcon, FileTextIcon, KeyIcon, LibraryIcon, SchoolIcon, SettingsIcon, UserIcon } from '../icons';
+import { OMR_ITEM_OPTIONS } from '../../services/omrEngine';
 
 interface AnalysisConfigProps {
     metadata: TestMetadata;
@@ -91,6 +92,19 @@ export const AnalysisConfig = ({
     )?.id || '';
 
     const activeClassSubjects = useClassSubjects(classes, metadata, subjects);
+
+    // Smart Filtering: Class Subjects -> Grade Level Subjects -> All
+    const filteredSubjects = React.useMemo(() => {
+        if (activeClassSubjects.length > 0) return activeClassSubjects;
+        if (metadata.gradeLevel) {
+            const gradeNum = metadata.gradeLevel.replace(/[^0-9]/g, '');
+            return subjects.filter(s => {
+                const subjGrade = (s.gradeLevel || '').toString().replace(/[^0-9]/g, '');
+                return subjGrade === gradeNum;
+            });
+        }
+        return subjects;
+    }, [activeClassSubjects, metadata.gradeLevel, subjects]);
 
     return (
         <div className="bg-slate-50/50 dark:bg-slate-900/30 p-4 md:p-8 min-h-full">
@@ -180,7 +194,7 @@ export const AnalysisConfig = ({
 
                             <div className="space-y-2">
                                 <label className="text-xs font-bold text-slate-500 uppercase tracking-wide ml-1">Subject Area</label>
-                                {activeClassSubjects.length > 0 ? (
+                                {filteredSubjects.length > 0 ? (
                                     <div className="relative group">
                                         <select
                                             name="subject"
@@ -189,7 +203,7 @@ export const AnalysisConfig = ({
                                             className="w-full pl-4 pr-10 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl appearance-none focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-medium text-slate-700 dark:text-slate-200"
                                         >
                                             <option value="">-- Select Subject --</option>
-                                            {activeClassSubjects.map((s: any) => <option key={s.id || s.name} value={s.name}>{s.name}</option>)}
+                                            {filteredSubjects.map((s: any) => <option key={s.id || s.name} value={s.name}>{s.name}</option>)}
                                         </select>
                                         <ChevronDownIcon className="absolute right-3 top-3.5 w-4 h-4 text-slate-400 group-hover:text-emerald-500 transition-colors pointer-events-none" />
                                     </div>
@@ -254,7 +268,64 @@ export const AnalysisConfig = ({
                             </div>
                             <div className="space-y-1">
                                 <label className="text-[10px] font-bold text-slate-400 uppercase">Items</label>
-                                <input type="number" name="totalItems" value={metadata.totalItems} onChange={handleUpdateTotalItems} className="w-full p-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 rounded-lg text-sm font-bold text-center text-indigo-700 dark:text-indigo-300" min="0" max="200" />
+                                <div className="relative">
+                                    {OMR_ITEM_OPTIONS.includes(metadata.totalItems) || metadata.totalItems === 0 ? (
+                                        <div className="relative">
+                                            <select
+                                                name="totalItems"
+                                                value={metadata.totalItems}
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    if (val === 'custom') {
+                                                        // Switch to custom mode by triggering a re-render with a non-standard value
+                                                        // We set it to 1 temporarily to trigger the input view if 1 is not in options (it isn't)
+                                                        // Or better, just keep current value if it's 0, but we need to enter input mode.
+                                                        // If we set it to '1', it renders input.
+                                                        setMetadata(prev => ({ ...prev, totalItems: 1 }));
+                                                    } else {
+                                                        const count = parseInt(val) || 0;
+                                                        setMetadata(prev => ({
+                                                            ...prev,
+                                                            totalItems: count,
+                                                            answerKey: Array(count).fill('').map((_, i) => prev.answerKey?.[i] || ''),
+                                                            competencies: Array(count).fill('').map((_, i) => prev.competencies?.[i] || '')
+                                                        }));
+                                                    }
+                                                }}
+                                                className="w-full p-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 rounded-lg text-sm font-bold text-center text-indigo-700 dark:text-indigo-300 appearance-none cursor-pointer"
+                                            >
+                                                <option value={0}>-</option>
+                                                {OMR_ITEM_OPTIONS.map((n: number) => (
+                                                    <option key={n} value={n}>{n}</option>
+                                                ))}
+                                                <option value="custom">Custom...</option>
+                                            </select>
+                                            <ChevronDownIcon className="absolute right-2 top-2.5 w-4 h-4 text-indigo-400 pointer-events-none" />
+                                        </div>
+                                    ) : (
+                                        <div className="relative flex items-center gap-1">
+                                            <input
+                                                type="number"
+                                                name="totalItems"
+                                                value={metadata.totalItems || ''}
+                                                onChange={handleUpdateTotalItems}
+                                                placeholder="#"
+                                                className="w-full p-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 rounded-lg text-sm font-bold text-center text-indigo-700 dark:text-indigo-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                                                min="0"
+                                                max="200"
+                                                autoFocus
+                                            />
+                                            <button
+                                                onClick={() => setMetadata(prev => ({ ...prev, totalItems: 0 }))}
+                                                type="button"
+                                                title="Switch to Presets"
+                                                className="p-2 text-slate-400 hover:text-indigo-500 transition-colors"
+                                            >
+                                                <SettingsIcon className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -266,10 +337,11 @@ export const AnalysisConfig = ({
                     schools={schools}
                     classes={classes}
                     teachers={teachers}
-                    subjects={subjects}
+                    subjects={(filteredSubjects as any[])}
                     onSchoolSelect={onSchoolSelect}
                     onClassSelect={onClassSelect}
                     onSubjectSelect={onSubjectSelect}
+
                     onQuestionFileSelect={() => { }} // File upload handled in Setup
                     onMapCompetencies={() => { }} // Handled in Setup
                     handleAnswerKeyChange={handleAnswerKeyChange}
